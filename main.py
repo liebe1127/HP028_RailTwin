@@ -138,23 +138,40 @@ def open_serial(port: str, baud: int, timeout: float) -> serial.Serial:
 
 # ─────────────────────────────────────────────
 #  유틸리티: 센서 라인 파싱
-#  입력 예시: "AX:0.12,AY:-0.05,AZ:9.81,DIST:23.45"
-#  반환: {"AX": 0.12, "AY": -0.05, "AZ": 9.81, "DIST": 23.45}
-#        DIST:ERR 인 경우 "DIST": None
+#  입력 예시:
+#    "AAX:0.12,AAY:-0.05,AAZ:9.81,DIST:23.45,MAX:0.01,MAY:-0.02,MAZ:9.80,GX:0.5,GY:1.2,GZ:-0.3"
+#  반환: {"AAX": 0.12, ..., "DIST": 23.45, "MAX": 0.01, ..., "GZ": -0.3}
+#        ERR 이거나 숫자 변환 실패 시 해당 키의 값은 None
+#
+#  AA* : ADXL345 가속도 (m/s²) | DIST : HC-SR04 거리 (cm)
+#  MA* : MPU-6050 가속도 (m/s²) | G*  : MPU-6050 자이로 (rad/s)
 # ─────────────────────────────────────────────
+EXPECTED_KEYS = {"AAX", "AAY", "AAZ", "DIST", "MAX", "MAY", "MAZ", "GX", "GY", "GZ"}
+
+
 def parse_sensor_line(raw_line: str) -> dict | None:
     if not raw_line:
         return None
-    try:
-        fields: dict = {}
-        for token in raw_line.split(","):
-            key, _, value = token.partition(":")
-            key = key.strip()
-            value = value.strip()
-            fields[key] = None if value == "ERR" else float(value)
-        return fields if fields else None
-    except ValueError:
-        return None
+
+    fields: dict = {}
+    for token in raw_line.split(","):
+        key, sep, value = token.partition(":")
+        key = key.strip()
+        value = value.strip()
+
+        if not sep or key not in EXPECTED_KEYS:
+            continue  # 콜론 누락 또는 알 수 없는 키는 건너뜀
+
+        if value == "ERR" or value == "":
+            fields[key] = None
+            continue
+
+        try:
+            fields[key] = float(value)
+        except ValueError:
+            fields[key] = None  # 필드 단위로만 무효 처리, 라인 전체는 버리지 않음
+
+    return fields if fields else None
 
 
 # ─────────────────────────────────────────────
@@ -253,7 +270,12 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                 .tag("device_id", DEVICE_ID)
             )
 
-            field_map = {"AX": "accel_x", "AY": "accel_y", "AZ": "accel_z", "DIST": "distance_cm"}
+            field_map = {
+                "AAX": "adxl_accel_x", "AAY": "adxl_accel_y", "AAZ": "adxl_accel_z",
+                "DIST": "distance_cm",
+                "MAX": "mpu_accel_x", "MAY": "mpu_accel_y", "MAZ": "mpu_accel_z",
+                "GX": "mpu_gyro_x", "GY": "mpu_gyro_y", "GZ": "mpu_gyro_z",
+            }
             for sensor_key, influx_field in field_map.items():
                 val = data.get(sensor_key)
                 if val is not None:
@@ -270,10 +292,16 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
             # 연결된 클라이언트가 없으면 broadcast() 내부에서 즉시 반환됨
             ws_payload = {
                 "ts": data.get("_received_at"),
-                "AX": data.get("AX"),
-                "AY": data.get("AY"),
-                "AZ": data.get("AZ"),
+                "AAX": data.get("AAX"),
+                "AAY": data.get("AAY"),
+                "AAZ": data.get("AAZ"),
                 "DIST": data.get("DIST"),
+                "MAX": data.get("MAX"),
+                "MAY": data.get("MAY"),
+                "MAZ": data.get("MAZ"),
+                "GX": data.get("GX"),
+                "GY": data.get("GY"),
+                "GZ": data.get("GZ"),
                 "device_id": DEVICE_ID,
             }
             await ws_manager.broadcast(ws_payload)

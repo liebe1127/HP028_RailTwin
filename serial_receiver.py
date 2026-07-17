@@ -1,6 +1,6 @@
 """
 ESP32-S3 → MacBook 시리얼 수신 프로토타입
-ADXL345(가속도) + HC-SR04(초음파 거리) 데이터를 실시간으로 수신합니다.
+ADXL345(가속도) + MPU-6050(6축 자이로-가속도) + HC-SR04(초음파 거리) 데이터를 실시간으로 수신합니다.
 
 [맥북에서 포트 이름 찾는 방법]
 터미널에서 아래 명령어를 실행하면 연결된 시리얼 포트 목록이 출력됩니다.
@@ -29,52 +29,68 @@ RECONNECT_DELAY = 3.0       # 연결 끊김 후 재시도 대기 시간 (초)
 # ─────────────────────────────────────────────
 
 
+# 파싱 대상 키 목록 (센서 추가/제거 시 이 딕셔너리만 수정하면 됨)
+#   AA*  : ADXL345 가속도 (m/s²)
+#   DIST : HC-SR04 거리 (cm)
+#   MA*  : MPU-6050 가속도 (m/s²)
+#   G*   : MPU-6050 자이로 (rad/s)
+EXPECTED_KEYS = {"AAX", "AAY", "AAZ", "DIST", "MAX", "MAY", "MAZ", "GX", "GY", "GZ"}
+
+
 def parse_sensor_line(raw_line: str) -> dict | None:
     """
     ESP32가 보내는 한 줄 데이터를 파싱합니다.
 
     예상 포맷 (ESP32 펌웨어 출력 예시):
-      AX:0.12,AY:-0.05,AZ:9.81,DIST:23.45
-    포맷이 다를 경우 이 함수만 수정하면 됩니다.
+      AAX:0.12,AAY:-0.05,AAZ:9.81,DIST:23.45,MAX:0.01,MAY:-0.02,MAZ:9.80,GX:0.5,GY:1.2,GZ:-0.3
+    포맷이 다를 경우 이 함수와 EXPECTED_KEYS만 수정하면 됩니다.
 
     Returns:
-        dict  - 파싱 성공 시 필드 딕셔너리
-        None  - 빈 줄이거나 파싱 실패 시
+        dict  - 파싱 성공 시 필드 딕셔너리 (누락된 키는 포함되지 않음)
+        None  - 빈 줄이거나 유효한 키를 하나도 못 찾은 경우
     """
     if not raw_line:
         return None
 
-    try:
-        fields = {}
-        for token in raw_line.split(","):
-            key, _, value = token.partition(":")
-            key = key.strip()
-            value = value.strip()
-            # 펌웨어가 측정 실패 시 "ERR" 문자열을 보내는 경우를 처리
-            if value == "ERR":
-                fields[key] = None
-            else:
-                fields[key] = float(value)
-        return fields if fields else None
-    except ValueError:
-        return None
+    fields: dict = {}
+    for token in raw_line.split(","):
+        key, sep, value = token.partition(":")
+        key = key.strip()
+        value = value.strip()
+
+        if not sep or key not in EXPECTED_KEYS:
+            # 콜론이 없거나 알 수 없는 키는 건너뜀 (노이즈/포맷 변경 대비)
+            continue
+
+        if value == "ERR" or value == "":
+            fields[key] = None
+            continue
+
+        try:
+            fields[key] = float(value)
+        except ValueError:
+            # 숫자로 변환 안 되는 값은 해당 필드만 None 처리 (라인 전체를 버리지 않음)
+            fields[key] = None
+
+    return fields if fields else None
 
 
 def format_sensor_data(data: dict) -> str:
     """파싱된 데이터를 터미널 출력용 문자열로 변환합니다."""
-    parts = []
-    accel_keys = [("AX", "m/s²"), ("AY", "m/s²"), ("AZ", "m/s²")]
-    for key, unit in accel_keys:
-        if key in data:
-            parts.append(f"{key}: {data[key]:+7.3f} {unit}")
+    def fmt(key: str, unit: str) -> str | None:
+        if key not in data:
+            return None
+        val = data[key]
+        return f"{key}: ERR {unit}" if val is None else f"{key}: {val:+7.3f} {unit}"
 
-    if "DIST" in data:
-        dist_val = data["DIST"]
-        if dist_val is None:
-            parts.append("DIST:    ERR cm")
-        else:
-            parts.append(f"DIST: {dist_val:6.2f} cm")
+    groups = [
+        [fmt("AAX", "m/s²"), fmt("AAY", "m/s²"), fmt("AAZ", "m/s²")],
+        [fmt("DIST", "cm")],
+        [fmt("MAX", "m/s²"), fmt("MAY", "m/s²"), fmt("MAZ", "m/s²")],
+        [fmt("GX", "rad/s"), fmt("GY", "rad/s"), fmt("GZ", "rad/s")],
+    ]
 
+    parts = [p for group in groups for p in group if p is not None]
     return "  |  ".join(parts) if parts else str(data)
 
 
