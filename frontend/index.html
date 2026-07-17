@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>크레인 센서 대시보드</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* 값 갱신 시 깜빡임 애니메이션 */
+    @keyframes flash {
+      0%   { background-color: rgba(99, 102, 241, 0.25); }
+      100% { background-color: transparent; }
+    }
+    .flash {
+      animation: flash 0.4s ease-out;
+    }
+
+    /* 상태 표시등 펄스 */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+    .pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+    body { background: #0f172a; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100 font-mono p-6">
+
+  <!-- ── 헤더 ── -->
+  <header class="flex items-center justify-between mb-8">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight text-white">
+        크레인 IoT 대시보드
+      </h1>
+      <p class="text-slate-400 text-sm mt-1">ESP32-S3 · ADXL345 + HC-SR04</p>
+    </div>
+
+    <!-- 연결 상태 표시등 -->
+    <div class="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-800 border border-slate-700">
+      <span id="dot" class="w-3 h-3 rounded-full bg-red-500 pulse"></span>
+      <span id="status-text" class="text-sm font-semibold text-red-400">
+        Disconnected
+      </span>
+    </div>
+  </header>
+
+  <!-- ── 센서 카드 그리드 ── -->
+  <main class="grid grid-cols-2 gap-4 md:grid-cols-4">
+
+    <!-- AX 카드 -->
+    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-widest text-indigo-400">
+          가속도 X
+        </span>
+        <span class="text-xs text-slate-500">m/s²</span>
+      </div>
+      <div id="val-ax"
+           class="text-4xl font-bold text-white tabular-nums transition-colors rounded-lg px-1">
+        —
+      </div>
+      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
+        <div id="bar-ax" class="h-full bg-indigo-500 rounded-full transition-all duration-300"
+             style="width:50%"></div>
+      </div>
+    </div>
+
+    <!-- AY 카드 -->
+    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-widest text-violet-400">
+          가속도 Y
+        </span>
+        <span class="text-xs text-slate-500">m/s²</span>
+      </div>
+      <div id="val-ay"
+           class="text-4xl font-bold text-white tabular-nums transition-colors rounded-lg px-1">
+        —
+      </div>
+      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
+        <div id="bar-ay" class="h-full bg-violet-500 rounded-full transition-all duration-300"
+             style="width:50%"></div>
+      </div>
+    </div>
+
+    <!-- AZ 카드 -->
+    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-widest text-sky-400">
+          가속도 Z
+        </span>
+        <span class="text-xs text-slate-500">m/s²</span>
+      </div>
+      <div id="val-az"
+           class="text-4xl font-bold text-white tabular-nums transition-colors rounded-lg px-1">
+        —
+      </div>
+      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
+        <div id="bar-az" class="h-full bg-sky-500 rounded-full transition-all duration-300"
+             style="width:50%"></div>
+      </div>
+    </div>
+
+    <!-- DIST 카드 -->
+    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-widest text-emerald-400">
+          초음파 거리
+        </span>
+        <span class="text-xs text-slate-500">cm</span>
+      </div>
+      <div id="val-dist"
+           class="text-4xl font-bold text-white tabular-nums transition-colors rounded-lg px-1">
+        —
+      </div>
+      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
+        <!-- 최대 측정 범위 400cm 기준 -->
+        <div id="bar-dist" class="h-full bg-emerald-500 rounded-full transition-all duration-300"
+             style="width:0%"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── 하단 정보 바 ── -->
+  <footer class="mt-6 flex items-center justify-between text-xs text-slate-500">
+    <span>ws://127.0.0.1:8000/ws</span>
+    <span id="last-updated">마지막 수신: —</span>
+    <span id="msg-count">수신 횟수: 0</span>
+  </footer>
+
+  <!-- ── WebSocket 로직 ── -->
+  <script>
+    const WS_URL        = 'ws://127.0.0.1:8000/ws';
+    const RECONNECT_MS  = 4000;   // 재연결 대기 시간 (ms)
+    const ACCEL_MAX     = 20;     // 가속도 바 기준 최대값 (±20 m/s²)
+    const DIST_MAX      = 400;    // 거리 바 기준 최대값 (400 cm)
+
+    let ws            = null;
+    let reconnectTimer = null;
+    let msgCount      = 0;
+
+    // ── DOM 참조 ──
+    const dot         = document.getElementById('dot');
+    const statusText  = document.getElementById('status-text');
+    const lastUpdated = document.getElementById('last-updated');
+    const msgCountEl  = document.getElementById('msg-count');
+
+    const fields = {
+      ax:   { valEl: document.getElementById('val-ax'),   barEl: document.getElementById('bar-ax'),   max: ACCEL_MAX, signed: true  },
+      ay:   { valEl: document.getElementById('val-ay'),   barEl: document.getElementById('bar-ay'),   max: ACCEL_MAX, signed: true  },
+      az:   { valEl: document.getElementById('val-az'),   barEl: document.getElementById('bar-az'),   max: ACCEL_MAX, signed: true  },
+      dist: { valEl: document.getElementById('val-dist'), barEl: document.getElementById('bar-dist'), max: DIST_MAX,  signed: false },
+    };
+
+    // ── 상태 표시등 ──
+    function setConnected(connected) {
+      if (connected) {
+        dot.className        = 'w-3 h-3 rounded-full bg-emerald-400 pulse';
+        statusText.textContent = 'Connected';
+        statusText.className = 'text-sm font-semibold text-emerald-400';
+      } else {
+        dot.className        = 'w-3 h-3 rounded-full bg-red-500 pulse';
+        statusText.textContent = 'Disconnected';
+        statusText.className = 'text-sm font-semibold text-red-400';
+      }
+    }
+
+    // ── 값 카드 업데이트 (깜빡임 포함) ──
+    function updateCard(key, rawValue) {
+      const cfg    = fields[key];
+      const isErr  = (rawValue === null || rawValue === undefined);
+      const display = isErr ? 'ERR' : rawValue.toFixed(2);
+
+      cfg.valEl.textContent = display;
+
+      // 깜빡임: 기존 클래스 제거 후 재삽입
+      cfg.valEl.classList.remove('flash');
+      void cfg.valEl.offsetWidth; // reflow 강제
+      cfg.valEl.classList.add('flash');
+
+      // 진행 바 너비 계산 (signed: 중앙 기준 50% ± )
+      if (!isErr) {
+        let pct;
+        if (cfg.signed) {
+          pct = 50 + (rawValue / cfg.max) * 50;
+          pct = Math.min(100, Math.max(0, pct));
+        } else {
+          pct = (rawValue / cfg.max) * 100;
+          pct = Math.min(100, Math.max(0, pct));
+        }
+        cfg.barEl.style.width = pct + '%';
+      }
+    }
+
+    // ── WebSocket 연결 ──
+    function connect() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        setConnected(true);
+        console.log('[WS] 연결됨:', WS_URL);
+      };
+
+      ws.onmessage = (event) => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch {
+          console.warn('[WS] JSON 파싱 실패:', event.data);
+          return;
+        }
+
+        updateCard('ax',   data.AX);
+        updateCard('ay',   data.AY);
+        updateCard('az',   data.AZ);
+        updateCard('dist', data.DIST);
+
+        msgCount++;
+        const now = new Date();
+        lastUpdated.textContent = `마지막 수신: ${now.toLocaleTimeString('ko-KR')}`;
+        msgCountEl.textContent  = `수신 횟수: ${msgCount.toLocaleString()}`;
+      };
+
+      ws.onclose = (event) => {
+        setConnected(false);
+        console.warn(`[WS] 연결 종료 (code=${event.code}) — ${RECONNECT_MS / 1000}초 후 재연결`);
+        reconnectTimer = setTimeout(connect, RECONNECT_MS);
+      };
+
+      ws.onerror = (err) => {
+        console.error('[WS] 오류:', err);
+        ws.close(); // onclose 핸들러가 재연결을 처리함
+      };
+    }
+
+    // ── 최초 연결 ──
+    connect();
+  </script>
+
+</body>
+</html>
