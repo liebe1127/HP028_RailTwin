@@ -1,4 +1,4 @@
-![갠트리 크레인 예측 안전관리 시스템 아키텍처](docs/system-architecture.png)
+![하부 레일 변형 예측 기반 갠트리 크레인 디지털 트윈 안전관리 시스템 아키텍처](docs/system-architecture.png)
 
 # 가변 계측–레일 변형 디지털 트윈 기반 갠트리 크레인 예측 안전관리 시스템
 
