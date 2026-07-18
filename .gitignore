@@ -17,6 +17,10 @@ build/
 # 환경 변수 (토큰 등 민감 정보)
 .env
 
+# 학습된 모델 가중치 (재생성 가능한 산출물)
+*.pth
+*.pt
+
 # IDE
 .cursor/
 *.code-workspace

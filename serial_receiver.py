@@ -1,6 +1,8 @@
 """
 ESP32-S3 → MacBook 시리얼 수신 프로토타입
-ADXL345(가속도) + MPU-6050(6축 자이로-가속도) + HC-SR04(초음파 거리) 데이터를 실시간으로 수신합니다.
+갠트리 크레인 하부 레일 변형 예측용 진동·가속도·거리 데이터를 실시간으로 수신합니다.
+(ADXL345 + MPU-6050 + HC-SR04)
+
 
 [맥북에서 포트 이름 찾는 방법]
 터미널에서 아래 명령어를 실행하면 연결된 시리얼 포트 목록이 출력됩니다.
@@ -10,6 +12,8 @@ ADXL345(가속도) + MPU-6050(6축 자이로-가속도) + HC-SR04(초음파 거�
   /dev/cu.usbserial-10        ← CP2102 / CH340 USB-UART 칩 사용 시
 ESP32-S3를 C to C 케이블로 직결한 경우 보통 /dev/cu.usbmodem... 형태입니다.
 """
+
+from __future__ import annotations
 
 import serial
 import serial.tools.list_ports

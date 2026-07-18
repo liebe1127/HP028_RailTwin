@@ -1,6 +1,7 @@
 /**
  * crane_sensor.ino
- * 크레인 상태 데이터 수집 펌웨어
+ * 갠트리 크레인 주행 진동·가속도 계측 펌웨어
+ * (하부 주행 레일 변형 예측용 엣지 데이터 수집)
  * 대상 보드 : ESP32-S3-WROOM-1
  * 센서     : ADXL345 (I2C 가속도) + MPU-6050 (I2C 6축 자이로-가속도) + HC-SR04 (초음파 거리)
  *
@@ -57,6 +58,7 @@
  *    GX/GY/GZ    : MPU-6050 자이로 (rad/s)
  */
 
+#include <math.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL345_U.h>
@@ -74,6 +76,12 @@ constexpr uint8_t PIN_ECHO = 4;
 constexpr uint32_t SAMPLE_INTERVAL_MS = 1000;   // 데이터 전송 주기 (ms)
 constexpr uint32_t HC_SR04_TIMEOUT_US = 30000;  // Echo 대기 타임아웃 (µs, 약 5 m 해당)
 
+// 정지 시 무의미한 노이즈 전송을 막기 위한 가속도 임계값
+// 0.01g ≈ 0.0981 m/s² (Adafruit Unified Sensor는 m/s² 단위)
+// ※ 현장 센서 노이즈에 따라 이 값을 살짝 올리거나 낮춰 튜닝할 것
+constexpr float ACCEL_THRESHOLD_G = 0.01f;
+constexpr float ACCEL_THRESHOLD_MS2 = ACCEL_THRESHOLD_G * 9.80665f;
+
 // ─────────────────────────────────────────────
 //  센서 객체
 // ─────────────────────────────────────────────
@@ -82,6 +90,11 @@ Adafruit_MPU6050 mpu;                                             // I2C 0x68
 
 // 마지막 전송 시각 기록용
 static uint32_t lastSampleMs = 0;
+
+// 직전 샘플 가속도 (변화량 계산용)
+static float prevAax = 0.0f, prevAay = 0.0f, prevAaz = 0.0f;
+static float prevMax = 0.0f, prevMay = 0.0f, prevMaz = 0.0f;
+static bool hasPrevAccel = false;
 
 // ─────────────────────────────────────────────
 //  HC-SR04 거리 측정 함수
@@ -164,7 +177,9 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println("[OK]  MPU-6050 초기화 완료 (가속도 ±16g, 자이로 ±500°/s, I2C 0x68)");
 
-  Serial.println("[INFO] 데이터 출력 시작 (1초 주기, 115200 bps)");
+  Serial.print("[INFO] 데이터 출력 시작 (1초 주기, 115200 bps, 임계값=");
+  Serial.print(ACCEL_THRESHOLD_G, 3);
+  Serial.println("g)");
   Serial.println("─────────────────────────────────────────────");
 
   lastSampleMs = millis();
@@ -201,6 +216,33 @@ void loop() {
   float gx   = mpuGyro.gyro.x;           // rad/s
   float gy   = mpuGyro.gyro.y;
   float gz   = mpuGyro.gyro.z;
+
+  // ── 전송 임계값: 직전 샘플 대비 가속도 변화량이 0.01g 이상일 때만 전송 ──
+  // 크레인 정지 시 발생하는 미세 노이즈는 건너뛰어 백엔드 부하를 줄인다.
+  bool shouldTransmit = true;
+  if (hasPrevAccel) {
+    float dAax = aax - prevAax;
+    float dAay = aay - prevAay;
+    float dAaz = aaz - prevAaz;
+    float dMax = max_ - prevMax;
+    float dMay = may - prevMay;
+    float dMaz = maz - prevMaz;
+
+    float adxlDelta = sqrtf(dAax * dAax + dAay * dAay + dAaz * dAaz);
+    float mpuDelta  = sqrtf(dMax * dMax + dMay * dMay + dMaz * dMaz);
+    float maxDelta  = (adxlDelta > mpuDelta) ? adxlDelta : mpuDelta;
+
+    shouldTransmit = (maxDelta >= ACCEL_THRESHOLD_MS2);
+  }
+
+  // 직전 샘플은 전송 여부와 무관하게 갱신 (연속 변화량 기준 유지)
+  prevAax = aax; prevAay = aay; prevAaz = aaz;
+  prevMax = max_; prevMay = may; prevMaz = maz;
+  hasPrevAccel = true;
+
+  if (!shouldTransmit) {
+    return;  // 정지 노이즈 — Serial 전송 생략
+  }
 
   // ── 직렬 출력 (CSV-like 단일 라인) ──
   // 포맷: AAX:0.12,AAY:-0.05,AAZ:9.81,DIST:23.45,MAX:0.01,MAY:-0.02,MAZ:9.80,GX:0.5,GY:1.2,GZ:-0.3

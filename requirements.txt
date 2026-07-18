@@ -4,3 +4,6 @@ uvicorn[standard]>=0.30.0
 influxdb-client[async]>=1.43.0
 python-dotenv>=1.0.0
 websockets>=12.0
+torch>=2.2.0
+numpy>=1.26.0
+PyWavelets>=1.5.0
