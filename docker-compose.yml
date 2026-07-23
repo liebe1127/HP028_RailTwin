@@ -1,0 +1,28 @@
+# RailTwin FastAPI + WebSocket (Naver Cloud / 로컬 Docker 공통)
+# 사용: docker compose up -d --build
+# 접속: http://서버공인IP:8000/  ·  ws://서버공인IP:8000/ws
+
+services:
+  railtwin:
+    build: .
+    container_name: railtwin-api
+    ports:
+      - "8000:8000"
+    # .env 가 있으면 사용 (없어도 기동됨). 생성: cp .env.example .env
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 클라우드에는 ESP32가 없으므로 demo 스트리머가 동작함
+      RBF_MODEL_PATH: ${RBF_MODEL_PATH:-rbf_dummy_model.pth}
+      RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-100}
+      RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
+      DEVICE_ID: ${DEVICE_ID:-esp32-s3-cloud}
+    restart: unless-stopped
+    # InfluxDB가 없어도 서버는 기동 (쓰기 실패는 로그만)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

@@ -1,0 +1,31 @@
+.git
+.gitignore
+.cursor
+.env
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.Python
+.venv
+venv
+.env.local
+
+# 펌웨어·로컬 도구 (이미지에 불필요)
+firmware/
+godot/
+docs/*.pptx
+docs/RailTwin_Progress_Brief.pptx
+
+# IDE / OS
+.idea
+.vscode
+*.md
+!docs/ncp-docker-deploy.md
+
+# 테스트·캐시
+.pytest_cache
+.mypy_cache
+.DS_Store
+
+# 주의: *.pth 는 제외하지 않음 (로컬에 모델이 있으면 이미지에 포함)
