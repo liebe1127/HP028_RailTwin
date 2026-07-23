@@ -5,8 +5,8 @@ main.py
 
 아키텍처:
   [ESP32-S3] --serial--> [Producer Task] --asyncio.Queue--> [Consumer Task] --> [InfluxDB]
-       or                                                                  --> [RBF 레일 변형 추론] --> [WebSocket /ws]
-  [더미 스트리머] (시리얼 미연결 시, 1m 플라스틱 크레인 시연용)
+       or                                                                  --> [RBF 레일 변형 추론]
+  [더미 스트리머]                                                            --> [rail_risk 구간 히트맵] --> [WebSocket /ws]
 
 실행:
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -80,6 +80,17 @@ DEMO_DANGER_START_CM = 40.0
 DEMO_DANGER_END_CM = 50.0
 DEMO_DANGER_CENTER_CM = 45.0
 G_MS2 = 9.80665
+
+# 레일 구간 위험도 히트맵 (Godot 디지털 트윈용)
+RAIL_LENGTH_CM: float = float(os.getenv("RAIL_LENGTH_CM", str(DEMO_RAIL_LENGTH_CM)))
+RAIL_SEGMENT_COUNT: int = int(os.getenv("RAIL_SEGMENT_COUNT", "20"))
+# CREST / PRED → 0~1 위험도로 정규화할 때 쓰는 스케일
+CREST_RISK_LOW = 1.5
+CREST_RISK_HIGH = 5.0
+PRED_RISK_SCALE = 5.0
+
+# 서버 메모리에 유지되는 구간별 위험도 (0.0=정상 ~ 1.0=높음). 주행하며 max로 누적.
+rail_risk_state: list[float] = [0.0] * RAIL_SEGMENT_COUNT
 
 # ─────────────────────────────────────────────
 #  로거 설정
@@ -284,6 +295,39 @@ def extract_crest_feature(data: dict) -> float:
     if demo_target is not None:
         return float(demo_target)
     return crest
+
+
+def normalize_risk(pred_rail_deform: float | None, crest: float | None) -> float:
+    """PRED / CREST를 0~1 구간 위험도로 정규화. 둘 다 있으면 큰 쪽을 사용."""
+    scores: list[float] = []
+    if crest is not None:
+        scores.append(
+            float(
+                np.clip(
+                    (float(crest) - CREST_RISK_LOW) / (CREST_RISK_HIGH - CREST_RISK_LOW),
+                    0.0,
+                    1.0,
+                )
+            )
+        )
+    if pred_rail_deform is not None:
+        scores.append(float(np.clip(float(pred_rail_deform) / PRED_RISK_SCALE, 0.0, 1.0)))
+    return max(scores) if scores else 0.0
+
+
+def update_rail_risk(distance_cm: float | None, risk: float) -> list[float]:
+    """현재 위치에 해당하는 구간의 rail_risk를 max 누적 갱신 후 복사본 반환."""
+    global rail_risk_state
+    if RAIL_SEGMENT_COUNT <= 0 or RAIL_LENGTH_CM <= 0:
+        return list(rail_risk_state)
+    if distance_cm is None:
+        return list(rail_risk_state)
+
+    seg_len = RAIL_LENGTH_CM / RAIL_SEGMENT_COUNT
+    idx = int(float(distance_cm) / seg_len)
+    idx = max(0, min(idx, RAIL_SEGMENT_COUNT - 1))
+    rail_risk_state[idx] = max(rail_risk_state[idx], float(np.clip(risk, 0.0, 1.0)))
+    return list(rail_risk_state)
 
 
 def predict_rail_deform(data: dict) -> tuple[float | None, float | None]:
@@ -583,6 +627,10 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
             except Exception as exc:
                 logger.error("InfluxDB 쓰기 실패 (건너뜀): %s", exc)
 
+            # ── 레일 구간 위험도 히트맵 갱신 (Godot 세그먼트 시각화용) ──
+            risk = normalize_risk(pred_rail_deform, crest)
+            rail_risk = update_rail_risk(data.get("DIST"), risk)
+
             # ── WebSocket 브로드캐스트 ──
             # 연결된 클라이언트가 없으면 broadcast() 내부에서 즉시 반환됨
             ws_payload = {
@@ -600,6 +648,9 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                 "GZ": data.get("GZ"),
                 "CREST": crest,
                 "PRED_RAIL_DEFORM": pred_rail_deform,
+                "rail_risk": rail_risk,  # 구간별 0~1 위험도 배열
+                "rail_length_cm": RAIL_LENGTH_CM,
+                "segment_count": RAIL_SEGMENT_COUNT,
                 "device_id": DEVICE_ID,
                 "source": data.get("_source", "serial"),
             }
