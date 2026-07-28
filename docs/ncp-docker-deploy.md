@@ -1,13 +1,13 @@
 # 네이버클라우드(NCP)에 RailTwin FastAPI를 Docker로 올리는 가이드
-# 팀원이 자기 PC Godot에서 `ws://공인IP:8000/ws` 로 접속하는 것이 목표입니다.
+# 팀원이 자기 PC Godot에서 `wss://hp028-railtwin.duckdns.org/ws` 로 접속하는 것이 목표입니다.
 
 ## 한눈에 보기
 
 0. (처음이면) **VPC + Public Subnet** 만들기 ← 여기서 가장 많이 막힘
 1. Ubuntu 서버 만들기 + **공인 IP**
-2. 방화벽(ACG)에서 **22**, **8000** 포트 열기
-3. 서버에 Docker 설치 → 코드 받아서 `docker compose up`
-4. Godot Inspector의 WebSocket URL을 공인 IP로 바꾸기
+2. 방화벽(ACG)에서 **22**, **80**, **443** 포트 열기 (HTTP 시연만 할 때는 **8000**)
+3. 서버에 Docker 설치 → 코드 받아서 `docker compose up` (HTTPS는 아래 § HTTPS)
+4. Godot Inspector의 WebSocket URL을 `wss://hp028-railtwin.duckdns.org/ws` 로 바꾸기
 
 ESP32는 클라우드에 없습니다. 서버는 자동으로 **demo_mode** (가상 센서)로 돌아갑니다.
 
@@ -286,14 +286,54 @@ ws://127.0.0.1:8000/ws
 ## 11. 팀원에게 공유할 한 줄
 
 ```
-서버: http://공인IP:8000/
-Godot WebSocket: ws://공인IP:8000/ws
+서버: https://hp028-railtwin.duckdns.org/
+Godot WebSocket: wss://hp028-railtwin.duckdns.org/ws
 ```
+
+---
+
+## 12. HTTPS / WSS (Nginx 없이 Uvicorn SSL)
+
+인증서는 Certbot standalone으로 이미 발급된 상태를 가정합니다.
+
+- fullchain: `/etc/letsencrypt/live/hp028-railtwin.duckdns.org/fullchain.pem`
+- privkey: `/etc/letsencrypt/live/hp028-railtwin.duckdns.org/privkey.pem`
+- ACG: **443** (및 갱신용 **80**) 허용
+
+### Docker (권장 — 현재 NCP 운영 방식)
+
+```bash
+cd ~/해운물류0717   # 실제 클론 경로
+docker compose down
+docker compose -f docker-compose.https.yml up -d --build
+docker compose -f docker-compose.https.yml ps
+curl -I https://hp028-railtwin.duckdns.org/
+```
+
+### 호스트에서 직접 uvicorn
+
+```bash
+sudo bash scripts/run_https.sh
+```
+
+### 팀원 접속
+
+| 용도 | URL |
+|---|---|
+| 헬스/API | `https://hp028-railtwin.duckdns.org/` |
+| Godot / 대시보드 WS | `wss://hp028-railtwin.duckdns.org/ws` |
+
+로컬 HTTP 개발으로 되돌릴 때: `docker compose -f docker-compose.yml up -d --build`  
+프론트 로컬 WS: `frontend/index.html?ws=ws://127.0.0.1:8000/ws`
+
+### 인증서 갱신 참고
+
+`certbot renew` 가 standalone이면 **80** 포트가 비어 있어야 합니다. uvicorn은 **443**만 쓰므로 보통 문제 없습니다. 갱신 실패 시 컨테이너를 잠시 내리고 갱신한 뒤 다시 올리면 됩니다.
 
 ---
 
 ## 참고 (다음에 할 수 있는 것)
 
-- 도메인 + HTTPS/`wss://` (Nginx + 인증서)
 - ACG에서 팀원 IP만 허용
 - 실물 ESP32는 현장 PC에 두고, 클라우드로는 MQTT 등으로 중계 (현재 범위 밖)
+- 트래픽·인증서 자동 갱신을 더 편하게 쓰려면 이후 Nginx 리버스 프록시로 전환

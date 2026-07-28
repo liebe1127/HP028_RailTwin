@@ -108,13 +108,16 @@
   </main>
 
   <footer class="mt-6 flex items-center justify-between text-xs text-slate-500">
-    <span>ws://127.0.0.1:8000/ws</span>
+    <span id="ws-url-label">wss://hp028-railtwin.duckdns.org/ws</span>
     <span id="last-updated">마지막 수신: —</span>
     <span id="msg-count">수신 횟수: 0</span>
   </footer>
 
   <script>
-    const WS_URL = 'ws://127.0.0.1:8000/ws';
+    // 클라우드 HTTPS: wss://…  |  로컬: ?ws=ws://127.0.0.1:8000/ws
+    const WS_URL = new URLSearchParams(location.search).get('ws')
+      || 'wss://hp028-railtwin.duckdns.org/ws';
+    document.getElementById('ws-url-label').textContent = WS_URL;
     const RECONNECT_MS = 4000;
     const PRED_MAX = 40;
     const CREST_MAX = 10;

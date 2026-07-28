@@ -14,7 +14,8 @@ extends Node3D
 ## Godot 4.7 WebSocket: poll() + was_string_packet() + STATE_* 처리
 ## Docs: https://docs.godotengine.org/en/4.7/tutorials/networking/websocket.html
 
-@export var websocket_url: String = "ws://127.0.0.1:8000/ws"
+## 클라우드: wss://hp028-railtwin.duckdns.org/ws  |  로컬: ws://127.0.0.1:8000/ws
+@export var websocket_url: String = "wss://hp028-railtwin.duckdns.org/ws"
 @export var reconnect_sec: float = 3.0
 
 @export var crane_path: NodePath

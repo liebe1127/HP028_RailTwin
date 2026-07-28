@@ -1,6 +1,8 @@
 # RailTwin FastAPI + WebSocket (Naver Cloud / 로컬 Docker 공통)
 # 사용: docker compose up -d --build
-# 접속: http://서버공인IP:8000/  ·  ws://서버공인IP:8000/ws
+# 접속(HTTP): http://서버공인IP:8000/  ·  ws://서버공인IP:8000/ws
+# HTTPS 운영: docker compose -f docker-compose.https.yml up -d --build
+#   → https://hp028-railtwin.duckdns.org/  ·  wss://hp028-railtwin.duckdns.org/ws
 
 services:
   railtwin:
