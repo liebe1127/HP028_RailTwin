@@ -1,0 +1,52 @@
+# Nginx 없이 Uvicorn SSL — NCP 운영용 HTTPS/WSS (독립 compose)
+# 사전: Certbot으로 아래 경로 인증서 발급 완료
+#   /etc/letsencrypt/live/hp028-railtwin.duckdns.org/{fullchain,privkey}.pem
+#
+# 사용 (기존 HTTP 컨테이너 중지 후):
+#   docker compose down
+#   docker compose -f docker-compose.https.yml up -d --build
+#
+# 접속:
+#   https://hp028-railtwin.duckdns.org/
+#   wss://hp028-railtwin.duckdns.org/ws
+
+services:
+  railtwin:
+    build: .
+    container_name: railtwin-api
+    ports:
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RBF_MODEL_PATH: ${RBF_MODEL_PATH:-rbf_dummy_model.pth}
+      RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-100}
+      RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
+      DEVICE_ID: ${DEVICE_ID:-esp32-s3-cloud}
+    command:
+      - uvicorn
+      - main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "443"
+      - --ssl-certfile
+      - /etc/letsencrypt/live/hp028-railtwin.duckdns.org/fullchain.pem
+      - --ssl-keyfile
+      - /etc/letsencrypt/live/hp028-railtwin.duckdns.org/privkey.pem
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import ssl,urllib.request; urllib.request.urlopen('https://127.0.0.1:443/', context=ssl._create_unverified_context(), timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
