@@ -6,7 +6,7 @@ main.py
 아키텍처:
   [ESP32-S3] --serial--> [Producer Task] --asyncio.Queue--> [Consumer Task] --> [InfluxDB]
        or                                                                  --> [RBF 레일 변형 추론]
-  [더미 스트리머]                                                            --> [rail_risk 구간 히트맵] --> [WebSocket /ws]
+  [더미 스트리머]                                                            --> [left/right rail_risk] --> [WebSocket /ws]
 
 실행:
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -35,12 +35,14 @@ import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import numpy as np
 import serial
 import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 from influxdb_client import Point
 
@@ -67,6 +69,9 @@ INFLUX_TOKEN: str = os.getenv("INFLUX_TOKEN", "")
 INFLUX_ORG: str = os.getenv("INFLUX_ORG", "")
 INFLUX_BUCKET: str = os.getenv("INFLUX_BUCKET", "crane_data")
 DEVICE_ID: str = os.getenv("DEVICE_ID", "esp32-s3")
+# 시리얼 ESP32가 한쪽만 있을 때 매핑할 레일 (다른 쪽은 시연 더미)
+SERIAL_RAIL_SIDE: str = os.getenv("SERIAL_RAIL_SIDE", "left").strip().lower()
+RAIL_SIDES: tuple[str, ...] = ("left", "right")
 
 MEASUREMENT = "crane_sensor"
 QUEUE_MAX_SIZE = 100  # 큐 최대 적재 수 (초과 시 가장 오래된 항목 드롭)
@@ -89,8 +94,10 @@ CREST_RISK_LOW = 1.5
 CREST_RISK_HIGH = 5.0
 PRED_RISK_SCALE = 5.0
 
-# 서버 메모리에 유지되는 구간별 위험도 (0.0=정상 ~ 1.0=높음). 주행하며 max로 누적.
-rail_risk_state: list[float] = [0.0] * RAIL_SEGMENT_COUNT
+# 좌/우 레일 각각 구간별 위험도 (0.0=정상 ~ 1.0=높음). 주행하며 max로 누적.
+rail_risk_state: dict[str, list[float]] = {
+    side: [0.0] * RAIL_SEGMENT_COUNT for side in RAIL_SIDES
+}
 
 # ─────────────────────────────────────────────
 #  로거 설정
@@ -212,9 +219,10 @@ def parse_sensor_line(raw_line: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────
-#  AI 추론: RBF 레일 변형 대리 모델 (ml/train_rbf_surrogate.py 산출물)
-#  ml_state는 서버 시작 시 lifespan에서 채워지고, 모델 로드 실패 시에도
-#  None으로 남아 predict_rail_deform()이 조용히 스킵하도록 설계됨
+#  AI 추론: PyTorch RBF 레일 변형 대리 모델
+#  모델 정의는 ml/train_rbf_surrogate.py (centers=64, output_dim=1).
+#  입력 11차원 = 센서 10개 + CREST. 출력은 하부 레일 변형 스칼라.
+#  (거더 처짐 계수·PRED_DEFLECTION 을 쓰지 않음)
 # ─────────────────────────────────────────────
 ml_state: dict = {
     "model": None,
@@ -225,8 +233,10 @@ ml_state: dict = {
     "y_std": None,
 }
 
-# 웨이블릿 디노이징 / 파고율 계산용 가속도 롤링 윈도우
-accel_window: deque[float] = deque(maxlen=WINDOW_LEN)
+# 좌/우 레일 각각 웨이블릿·파고율용 가속도 롤링 윈도우
+accel_windows: dict[str, deque[float]] = {
+    side: deque(maxlen=WINDOW_LEN) for side in RAIL_SIDES
+}
 
 
 def get_inference_device() -> torch.device:
@@ -271,14 +281,17 @@ def load_rbf_model(path: str) -> None:
         ml_state["model"] = None
 
 
-def extract_crest_feature(data: dict) -> float:
+def extract_crest_feature(data: dict, side: str = "left") -> float:
     """
-    가속도 동적 진폭을 롤링 윈도우에 쌓고,
-    sym3 웨이블릿 디노이징 후 파고율(Crest Factor)을 계산한다.
+    가속도 창에 sym3 웨이블릿 디노이징을 적용한 뒤 파고율(Peak/RMS)을 계산한다.
 
-    시연용 더미 데이터가 `_demo_crest_target`을 넘기면 그 값을 우선 사용한다
-    (위험 구간 CREST≥5.0을 안정적으로 재현하기 위함).
+    창 우선순위:
+      1) accel_array 가 있으면 그 배열 (엣지가 윈도우를 보낼 때)
+      2) 아니면 ADXL+MPU 동적 진폭을 해당 레일 롤링 윈도우(WINDOW_LEN)에 적재
+    시연 더미의 `_demo_crest_target` 이 있으면 그 값을 반환한다
+    (40~50cm 단차 충격에서 CREST≥5.0 재현).
     """
+    window = accel_windows.setdefault(side, deque(maxlen=WINDOW_LEN))
     mag = accel_dynamic_magnitude(
         float(data.get("AAX") or 0.0),
         float(data.get("AAY") or 0.0),
@@ -287,14 +300,40 @@ def extract_crest_feature(data: dict) -> float:
         float(data.get("MAY") or 0.0),
         float(data.get("MAZ") or 9.8),
     )
-    accel_window.append(mag)
-    window_arr = np.asarray(accel_window, dtype=np.float64)
-    crest = compute_crest_from_window(window_arr)
+    window.append(mag)
+
+    raw_window = data.get("accel_array")
+    if raw_window is not None:
+        window_arr = np.asarray(raw_window, dtype=np.float64).ravel()
+    else:
+        window_arr = np.asarray(window, dtype=np.float64)
+
+    crest = compute_crest_from_window(window_arr) if window_arr.size else 0.0
 
     demo_target = data.get("_demo_crest_target")
     if demo_target is not None:
         return float(demo_target)
     return crest
+
+
+def preprocess_and_extract_features(
+    data: dict, side: str = "left"
+) -> tuple[list[float | None], float]:
+    """
+    원시 센서를 모델에 직입력하지 않는다.
+    FEATURE_NAMES 순서의 11차원 벡터를 만들고, CREST만 웨이블릿 특징이다.
+
+      [AAX, AAY, AAZ, DIST, MAX, MAY, MAZ, GX, GY, GZ, CREST]
+    """
+    crest = extract_crest_feature(data, side)
+    values: list[float | None] = []
+    for key in FEATURE_NAMES:
+        if key == "CREST":
+            values.append(float(crest))
+            continue
+        val = data.get(key)
+        values.append(None if val is None else float(val))
+    return values, float(crest)
 
 
 def normalize_risk(pred_rail_deform: float | None, crest: float | None) -> float:
@@ -315,25 +354,28 @@ def normalize_risk(pred_rail_deform: float | None, crest: float | None) -> float
     return max(scores) if scores else 0.0
 
 
-def update_rail_risk(distance_cm: float | None, risk: float) -> list[float]:
-    """현재 위치에 해당하는 구간의 rail_risk를 max 누적 갱신 후 복사본 반환."""
-    global rail_risk_state
+def update_rail_risk(
+    distance_cm: float | None, risk: float, side: str = "left"
+) -> list[float]:
+    """해당 레일에서 현재 위치 구간의 rail_risk를 max 누적 갱신 후 복사본 반환."""
+    state = rail_risk_state.setdefault(side, [0.0] * RAIL_SEGMENT_COUNT)
     if RAIL_SEGMENT_COUNT <= 0 or RAIL_LENGTH_CM <= 0:
-        return list(rail_risk_state)
+        return list(state)
     if distance_cm is None:
-        return list(rail_risk_state)
+        return list(state)
 
     seg_len = RAIL_LENGTH_CM / RAIL_SEGMENT_COUNT
     idx = int(float(distance_cm) / seg_len)
     idx = max(0, min(idx, RAIL_SEGMENT_COUNT - 1))
-    rail_risk_state[idx] = max(rail_risk_state[idx], float(np.clip(risk, 0.0, 1.0)))
-    return list(rail_risk_state)
+    state[idx] = max(state[idx], float(np.clip(risk, 0.0, 1.0)))
+    return list(state)
 
 
-def predict_rail_deform(data: dict) -> tuple[float | None, float | None]:
+def predict_rail_deform(
+    data: dict, side: str = "left"
+) -> tuple[float | None, float | None]:
     """
-    센서 원시값 + 웨이블릿/파고율 특징을 결합해 RBF 대리 모델로
-    하부 주행 레일 변형 지표를 추론한다.
+    특징 공학(11차원) → RBF → 하부 주행 레일 변형 지표(스칼라).
 
     Returns:
         (pred_rail_deform, crest) — 실패 시 해당 값은 None
@@ -342,10 +384,10 @@ def predict_rail_deform(data: dict) -> tuple[float | None, float | None]:
     crest: float | None = None
 
     try:
-        crest = extract_crest_feature(data)
+        raw_values, crest = preprocess_and_extract_features(data, side)
     except Exception as exc:
-        logger.error("파고율 특징 추출 실패 (건너뜀): %s", exc)
-        crest = None
+        logger.error("특징 추출 실패 (건너뜀): %s", exc)
+        return None, None
 
     if model is None:
         return None, crest
@@ -357,30 +399,75 @@ def predict_rail_deform(data: dict) -> tuple[float | None, float | None]:
         y_mean = ml_state["y_mean"]
         y_std = ml_state["y_std"]
 
-        # FEATURE_NAMES 순서: 센서 10개 + CREST
-        raw_values: list[float] = []
-        for i, key in enumerate(FEATURE_NAMES):
-            if key == "CREST":
-                if crest is None:
-                    raw_values.append(float(x_mean[0, i].item()))
-                else:
-                    raw_values.append(float(crest))
-                continue
+        filled: list[float] = []
+        for i, val in enumerate(raw_values):
+            filled.append(float(x_mean[0, i].item()) if val is None else float(val))
 
-            val = data.get(key)
-            raw_values.append(float(x_mean[0, i].item()) if val is None else float(val))
-
-        x = torch.tensor([raw_values], dtype=torch.float32, device=device)
+        x = torch.tensor([filled], dtype=torch.float32, device=device)
         x_norm = (x - x_mean) / x_std
 
         with torch.no_grad():
             pred_norm = model(x_norm)
 
-        pred = float(pred_norm.item() * y_std.item() + y_mean.item())
-        return pred, crest
+        pred_rail_deform = float(pred_norm.item() * y_std.item() + y_mean.item())
+        return pred_rail_deform, crest
     except Exception as exc:
         logger.error("AI 추론 실패 (건너뜀): %s", exc)
         return None, crest
+
+
+def split_rail_samples(data: dict) -> tuple[str, dict[str, dict]]:
+    """큐 항목에서 좌/우 레일 샘플과 source 를 꺼낸다. 구 평면 페이로드는 양쪽에 복제."""
+    source = str(data.get("source") or data.get("_source") or "serial")
+    samples: dict[str, dict] = {}
+    for side in RAIL_SIDES:
+        sample = data.get(side)
+        if isinstance(sample, dict):
+            samples[side] = sample
+    if samples:
+        return source, samples
+    return source, {"left": data, "right": data}
+
+
+def build_side_ws_payload(
+    sample: dict,
+    *,
+    side: str,
+    pred_rail_deform: float | None,
+    crest: float | None,
+    rail_risk: list[float],
+) -> dict:
+    """Godot left/right 객체 하나에 넣을 레일별 페이로드."""
+    return {
+        "ts": sample.get("_received_at"),
+        "distance_x": sample.get("DIST"),
+        "AAX": sample.get("AAX"),
+        "AAY": sample.get("AAY"),
+        "AAZ": sample.get("AAZ"),
+        "DIST": sample.get("DIST"),
+        "MAX": sample.get("MAX"),
+        "MAY": sample.get("MAY"),
+        "MAZ": sample.get("MAZ"),
+        "GX": sample.get("GX"),
+        "GY": sample.get("GY"),
+        "GZ": sample.get("GZ"),
+        "CREST": crest,
+        "PRED_RAIL_DEFORM": pred_rail_deform,
+        "rail_risk": rail_risk,
+        "rail_length_cm": RAIL_LENGTH_CM,
+        "segment_count": RAIL_SEGMENT_COUNT,
+        "device_id": f"{DEVICE_ID}-{side}",
+    }
+
+
+async def enqueue_sensor_item(item: dict) -> None:
+    if sensor_queue.full():
+        try:
+            sensor_queue.get_nowait()
+            logger.warning("큐 오버플로 — 가장 오래된 항목 드롭")
+        except asyncio.QueueEmpty:
+            pass
+    await sensor_queue.put(item)
 
 
 # ─────────────────────────────────────────────
@@ -466,10 +553,10 @@ def generate_crane_demo_sample(distance_x: float) -> dict:
 async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     """
     ESP32 미연결 시 1m 플라스틱 크레인 시연용 더미 데이터를 10Hz로 생성한다.
-    Consumer가 RBF 추론 후 WebSocket으로 distance_x / CREST / PRED_RAIL_DEFORM을 전송한다.
+    Consumer가 RBF 추론 후 WebSocket으로 left/right 레일 페이로드를 전송한다.
     """
     logger.info(
-        "더미 스트리머 시작 (시연 모드): %.0fcm 레일, %.0fHz, 위험구간 %s~%scm",
+        "더미 스트리머 시작 (시연 모드): %.0fcm 레일, %.0fHz, 위험구간 %s~%scm (좌/우 독립)",
         DEMO_RAIL_LENGTH_CM,
         1.0 / DEMO_HZ_INTERVAL,
         DEMO_DANGER_START_CM,
@@ -479,22 +566,21 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     distance_x = 0.0
 
     while not stop_event.is_set():
-        sample = generate_crane_demo_sample(distance_x)
-        sample["_received_at"] = time.time()
+        ts = time.time()
+        left = generate_crane_demo_sample(distance_x)
+        right = generate_crane_demo_sample(distance_x)
+        left["_received_at"] = ts
+        right["_received_at"] = ts
 
-        if sensor_queue.full():
-            try:
-                sensor_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        await sensor_queue.put(sample)
+        await enqueue_sensor_item({"left": left, "right": right, "source": "demo"})
 
         zone = "DANGER" if DEMO_DANGER_START_CM <= distance_x <= DEMO_DANGER_END_CM else "OK"
         logger.info(
-            "더미 → x=%.0fcm [%s] crest_target=%.2f",
+            "더미 → x=%.0fcm [%s] left_crest=%.2f right_crest=%.2f",
             distance_x,
             zone,
-            sample["_demo_crest_target"],
+            left["_demo_crest_target"],
+            right["_demo_crest_target"],
         )
 
         distance_x += 1.0
@@ -555,17 +641,22 @@ async def serial_producer(stop_event: asyncio.Event) -> None:
             logger.debug("파싱 실패 (건너뜀): %s", raw_line)
             continue
 
-        parsed["_received_at"] = time.time()  # 호스트 수신 타임스탬프
+        parsed["_received_at"] = time.time()
         logger.info("수신 → %s", raw_line)
 
-        # ── 큐 적재 (가득 찬 경우 가장 오래된 항목 드롭) ──
-        if sensor_queue.full():
-            try:
-                sensor_queue.get_nowait()
-                logger.warning("큐 오버플로 — 가장 오래된 항목 드롭")
-            except asyncio.QueueEmpty:
-                pass
-        await sensor_queue.put(parsed)
+        dist = parsed.get("DIST")
+        other_side = "right" if SERIAL_RAIL_SIDE == "left" else "left"
+        other_sample = generate_crane_demo_sample(float(dist) if dist is not None else 0.0)
+        other_sample["_received_at"] = parsed["_received_at"]
+
+        item = {"source": "serial"}
+        if SERIAL_RAIL_SIDE in RAIL_SIDES:
+            item[SERIAL_RAIL_SIDE] = parsed
+            item[other_side] = other_sample
+        else:
+            item["left"] = parsed
+            item["right"] = other_sample
+        await enqueue_sensor_item(item)
 
     # ── 종료 처리 ──
     if ser and ser.is_open:
@@ -590,70 +681,54 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
         write_api = influx.write_api()
 
         while not stop_event.is_set() or not sensor_queue.empty():
-            # ── 큐에서 데이터 꺼내기 (0.5초 타임아웃으로 종료 시그널 주기적 확인) ──
             try:
                 data: dict = await asyncio.wait_for(sensor_queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            # ── InfluxDB Point 구성 ──
-            point = (
-                Point(MEASUREMENT)
-                .tag("device_id", DEVICE_ID)
-            )
+            source, samples = split_rail_samples(data)
+            ws_payload: dict = {"source": source}
 
-            field_map = {
-                "AAX": "adxl_accel_x", "AAY": "adxl_accel_y", "AAZ": "adxl_accel_z",
-                "DIST": "distance_cm",
-                "MAX": "mpu_accel_x", "MAY": "mpu_accel_y", "MAZ": "mpu_accel_z",
-                "GX": "mpu_gyro_x", "GY": "mpu_gyro_y", "GZ": "mpu_gyro_z",
-            }
-            for sensor_key, influx_field in field_map.items():
-                val = data.get(sensor_key)
-                if val is not None:
-                    point = point.field(influx_field, float(val))
+            for side, sample in samples.items():
+                point = (
+                    Point(MEASUREMENT)
+                    .tag("device_id", f"{DEVICE_ID}-{side}")
+                    .tag("rail_side", side)
+                )
 
-            # ── AI 추론: 웨이블릿 디노이징 + 파고율 → RBF 레일 변형 예측 ──
-            pred_rail_deform, crest = predict_rail_deform(data)
-            if pred_rail_deform is not None:
-                point = point.field("pred_rail_deform", pred_rail_deform)
-            if crest is not None:
-                point = point.field("crest_factor", float(crest))
+                field_map = {
+                    "AAX": "adxl_accel_x", "AAY": "adxl_accel_y", "AAZ": "adxl_accel_z",
+                    "DIST": "distance_cm",
+                    "MAX": "mpu_accel_x", "MAY": "mpu_accel_y", "MAZ": "mpu_accel_z",
+                    "GX": "mpu_gyro_x", "GY": "mpu_gyro_y", "GZ": "mpu_gyro_z",
+                }
+                for sensor_key, influx_field in field_map.items():
+                    val = sample.get(sensor_key)
+                    if val is not None:
+                        point = point.field(influx_field, float(val))
 
-            # ── InfluxDB 쓰기 (실패해도 서버 다운 없이 에러 로그만 기록) ──
-            try:
-                await write_api.write(bucket=INFLUX_BUCKET, record=point)
-                logger.debug("InfluxDB 저장 완료")
-            except Exception as exc:
-                logger.error("InfluxDB 쓰기 실패 (건너뜀): %s", exc)
+                pred_rail_deform, crest = predict_rail_deform(sample, side)
+                if pred_rail_deform is not None:
+                    point = point.field("pred_rail_deform", pred_rail_deform)
+                if crest is not None:
+                    point = point.field("crest_factor", float(crest))
 
-            # ── 레일 구간 위험도 히트맵 갱신 (Godot 세그먼트 시각화용) ──
-            risk = normalize_risk(pred_rail_deform, crest)
-            rail_risk = update_rail_risk(data.get("DIST"), risk)
+                try:
+                    await write_api.write(bucket=INFLUX_BUCKET, record=point)
+                    logger.debug("InfluxDB 저장 완료 (%s)", side)
+                except Exception as exc:
+                    logger.error("InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc)
 
-            # ── WebSocket 브로드캐스트 ──
-            # 연결된 클라이언트가 없으면 broadcast() 내부에서 즉시 반환됨
-            ws_payload = {
-                "ts": data.get("_received_at"),
-                "distance_x": data.get("DIST"),  # Godot / 시연용 크레인 위치 (cm)
-                "AAX": data.get("AAX"),
-                "AAY": data.get("AAY"),
-                "AAZ": data.get("AAZ"),
-                "DIST": data.get("DIST"),
-                "MAX": data.get("MAX"),
-                "MAY": data.get("MAY"),
-                "MAZ": data.get("MAZ"),
-                "GX": data.get("GX"),
-                "GY": data.get("GY"),
-                "GZ": data.get("GZ"),
-                "CREST": crest,
-                "PRED_RAIL_DEFORM": pred_rail_deform,
-                "rail_risk": rail_risk,  # 구간별 0~1 위험도 배열
-                "rail_length_cm": RAIL_LENGTH_CM,
-                "segment_count": RAIL_SEGMENT_COUNT,
-                "device_id": DEVICE_ID,
-                "source": data.get("_source", "serial"),
-            }
+                risk = normalize_risk(pred_rail_deform, crest)
+                rail_risk = update_rail_risk(sample.get("DIST"), risk, side)
+                ws_payload[side] = build_side_ws_payload(
+                    sample,
+                    side=side,
+                    pred_rail_deform=pred_rail_deform,
+                    crest=crest,
+                    rail_risk=rail_risk,
+                )
+
             await ws_manager.broadcast(ws_payload)
 
             sensor_queue.task_done()
@@ -708,6 +783,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
+DASHBOARD_HTML = FRONTEND_DIR / "index.html"
+
 
 # ─────────────────────────────────────────────
 #  엔드포인트
@@ -732,6 +810,14 @@ async def health_check():
 @app.get("/queue/size", summary="큐 현재 크기 조회")
 async def queue_size():
     return {"queue_size": sensor_queue.qsize()}
+
+
+@app.get("/dashboard", summary="레일 변형 웹 대시보드")
+async def dashboard():
+    """같은 FastAPI 프로세스에서 frontend/index.html 을 연다."""
+    if not DASHBOARD_HTML.is_file():
+        return {"error": "frontend/index.html 이 서버에 없습니다"}
+    return FileResponse(DASHBOARD_HTML)
 
 
 # ─────────────────────────────────────────────
