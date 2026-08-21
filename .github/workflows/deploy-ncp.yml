@@ -1,0 +1,27 @@
+# main에 merge/push 되면 NCP 서버에서 git pull + fastapi 재시작
+name: Deploy to NCP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ncp
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy (git pull + restart)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.NCP_HOST }}
+          username: ${{ secrets.NCP_USER }}
+          key: ${{ secrets.NCP_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd /var/www/HP028_RailTwin
+            bash scripts/ncp_deploy.sh
