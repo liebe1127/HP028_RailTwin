@@ -3,156 +3,285 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>레일 변형 예측 대시보드</title>
+  <title>레일 변형 파이프라인 모니터</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    @keyframes flash {
-      0%   { background-color: rgba(99, 102, 241, 0.25); }
-      100% { background-color: transparent; }
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --line: #243044;
+      --muted: #8b9bb4;
+      --text: #e8eef8;
+      --stage1: #2dd4bf;
+      --stage2: #f59e0b;
+      --stage3: #60a5fa;
+      --danger: #f43f5e;
     }
-    .flash { animation: flash 0.4s ease-out; }
-
-    @keyframes pulse-dot {
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #132033 0%, transparent 55%),
+        radial-gradient(900px 500px at 90% 0%, #1a1520 0%, transparent 50%),
+        var(--bg);
+      color: var(--text);
+      font-family: "IBM Plex Sans KR", "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+    }
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    .panel {
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+    .pipe-arrow {
+      width: 28px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #4b5d78, transparent);
+      position: relative;
+      flex-shrink: 0;
+    }
+    .pipe-arrow::after {
+      content: "";
+      position: absolute;
+      right: -2px;
+      top: -4px;
+      border: 5px solid transparent;
+      border-left-color: #4b5d78;
+    }
+    .seg {
+      height: 14px;
+      border-radius: 3px;
+      background: #1e293b;
+      flex: 1;
+      min-width: 0;
+      transition: background-color 180ms ease;
+    }
+    .hz-live { animation: blink 1.2s ease-in-out infinite; }
+    @keyframes blink {
       0%, 100% { opacity: 1; }
-      50%       { opacity: 0.35; }
+      50% { opacity: 0.35; }
     }
-    .pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
-
-    body { background: #0f172a; }
+    .stage-pulse { box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.35); }
+    .stage-pulse.on {
+      animation: pingring 0.45s ease-out;
+    }
+    @keyframes pingring {
+      0% { box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.45); }
+      100% { box-shadow: 0 0 0 12px rgba(45, 212, 191, 0); }
+    }
+    .log-line { border-bottom: 1px solid #1c273a; }
+    .crane-track {
+      position: relative;
+      height: 36px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+    .crane-danger {
+      position: absolute;
+      top: 0; bottom: 0;
+      left: 40%;
+      width: 10%;
+      background: rgba(244, 63, 94, 0.22);
+    }
+    .crane-dot {
+      position: absolute;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      margin-top: -7px;
+      margin-left: -7px;
+      border-radius: 50%;
+      background: var(--stage1);
+      box-shadow: 0 0 12px rgba(45, 212, 191, 0.6);
+      transition: left 80ms linear;
+    }
   </style>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css" rel="stylesheet" />
 </head>
-<body class="min-h-screen text-slate-100 font-mono p-6">
+<body class="p-4 md:p-6 lg:p-8">
 
-  <header class="flex items-center justify-between mb-8">
+  <header class="flex flex-wrap items-start justify-between gap-4 mb-6">
     <div>
-      <h1 class="text-2xl font-bold tracking-tight text-white">
-        레일 변형 예측 대시보드
-      </h1>
-      <p class="text-slate-400 text-sm mt-1">
-        갠트리 크레인 · 하부 주행 레일(단차·침하·뒤틀림) · ESP32-S3
-      </p>
+      <p class="text-xs tracking-[0.2em] uppercase text-slate-500 mb-1">실시간 파이프라인</p>
+      <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">더미 스트리머 → AI 추론 → Godot 전송</h1>
+      <p class="text-sm text-slate-400 mt-2">가짜 데이터 없음 · 서버 WebSocket·헬스 API만 표시</p>
     </div>
-
-    <div class="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-800 border border-slate-700">
-      <span id="dot" class="w-3 h-3 rounded-full bg-red-500 pulse"></span>
-      <span id="status-text" class="text-sm font-semibold text-red-400">Disconnected</span>
+    <div class="panel px-4 py-3 flex items-center gap-3 min-w-[220px]">
+      <span id="dot" class="w-2.5 h-2.5 rounded-full bg-rose-500 hz-live"></span>
+      <div>
+        <div id="status-text" class="text-sm font-semibold text-rose-400">연결 끊김</div>
+        <div id="ws-url-label" class="mono text-[11px] text-slate-500 break-all"></div>
+      </div>
     </div>
   </header>
 
-  <!-- 예측 / 위치 핵심 지표 -->
-  <section class="grid grid-cols-1 gap-4 mb-4 md:grid-cols-3">
-    <div class="rounded-2xl bg-slate-800 border border-amber-700/50 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-amber-400">레일 변형 예측</span>
-        <span class="text-xs text-slate-500">PRED_RAIL_DEFORM</span>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <div class="text-xs text-slate-500 mb-1">LEFT</div>
-          <div id="val-pred-left" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
-            <div id="bar-pred-left" class="h-full bg-amber-500 rounded-full transition-all duration-300" style="width:0%"></div>
-          </div>
-        </div>
-        <div>
-          <div class="text-xs text-slate-500 mb-1">RIGHT</div>
-          <div id="val-pred-right" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
-            <div id="bar-pred-right" class="h-full bg-amber-500 rounded-full transition-all duration-300" style="width:0%"></div>
-          </div>
-        </div>
-      </div>
+  <!-- 서버 상태 (GET /) -->
+  <section class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+    <div class="panel p-3">
+      <div class="text-[11px] text-slate-500 mb-1">데이터 소스</div>
+      <div id="meta-source" class="text-sm font-semibold">—</div>
     </div>
-
-    <div class="rounded-2xl bg-slate-800 border border-rose-700/50 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-rose-400">파고율 (단차 충격)</span>
-        <span class="text-xs text-slate-500">CREST</span>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <div class="text-xs text-slate-500 mb-1">LEFT</div>
-          <div id="val-crest-left" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
-            <div id="bar-crest-left" class="h-full bg-rose-500 rounded-full transition-all duration-300" style="width:0%"></div>
-          </div>
-        </div>
-        <div>
-          <div class="text-xs text-slate-500 mb-1">RIGHT</div>
-          <div id="val-crest-right" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
-            <div id="bar-crest-right" class="h-full bg-rose-500 rounded-full transition-all duration-300" style="width:0%"></div>
-          </div>
-        </div>
-      </div>
+    <div class="panel p-3">
+      <div class="text-[11px] text-slate-500 mb-1">AI 모델</div>
+      <div id="meta-ai" class="text-sm font-semibold">—</div>
     </div>
-
-    <div class="rounded-2xl bg-slate-800 border border-emerald-700/50 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-emerald-400">크레인 위치</span>
-        <span class="text-xs text-slate-500">distance_x / cm</span>
-      </div>
-      <div id="val-x" class="text-4xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
-        <div id="bar-x" class="h-full bg-emerald-500 rounded-full transition-all duration-300" style="width:0%"></div>
-      </div>
+    <div class="panel p-3">
+      <div class="text-[11px] text-slate-500 mb-1">WebSocket 클라이언트</div>
+      <div id="meta-ws" class="text-sm font-semibold mono">—</div>
+    </div>
+    <div class="panel p-3">
+      <div class="text-[11px] text-slate-500 mb-1">큐 / 수신</div>
+      <div id="meta-queue" class="text-sm font-semibold mono">—</div>
+    </div>
+    <div class="panel p-3">
+      <div class="text-[11px] text-slate-500 mb-1">Hz (실측)</div>
+      <div id="meta-hz" class="text-sm font-semibold mono">—</div>
     </div>
   </section>
 
-  <main class="grid grid-cols-1 gap-4 md:grid-cols-2">
-    <section class="rounded-2xl bg-slate-800 border border-slate-700 p-5">
-      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">LEFT 가속도</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <div class="text-xs text-indigo-400">AAX</div>
-          <div id="val-aax-left" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-        <div>
-          <div class="text-xs text-violet-400">AAY</div>
-          <div id="val-aay-left" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-        <div>
-          <div class="text-xs text-sky-400">AAZ</div>
-          <div id="val-aaz-left" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-        <div>
-          <div class="text-xs text-teal-400">DIST</div>
-          <div id="val-dist-left" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-      </div>
-    </section>
-    <section class="rounded-2xl bg-slate-800 border border-slate-700 p-5">
-      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">RIGHT 가속도</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <div class="text-xs text-indigo-400">AAX</div>
-          <div id="val-aax-right" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-        <div>
-          <div class="text-xs text-violet-400">AAY</div>
-          <div id="val-aay-right" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-        <div>
-          <div class="text-xs text-sky-400">AAZ</div>
-          <div id="val-aaz-right" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-        <div>
-          <div class="text-xs text-teal-400">DIST</div>
-          <div id="val-dist-right" class="text-2xl font-bold tabular-nums">—</div>
-        </div>
-      </div>
-    </section>
-  </main>
+  <!-- 3단 파이프라인 -->
+  <section class="flex flex-col xl:flex-row xl:items-stretch gap-3 mb-6">
 
-  <footer class="mt-6 flex items-center justify-between text-xs text-slate-500">
-    <span id="ws-url-label">wss://hp028-railtwin.duckdns.org/ws</span>
+    <!-- 1. 더미 스트리머 -->
+    <article id="stage-1" class="panel p-4 flex-1 stage-pulse">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage1)">단계 1</div>
+          <h2 class="text-lg font-semibold">더미 스트리머</h2>
+        </div>
+        <span id="zone-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
+      </div>
+      <p class="text-xs text-slate-400 mb-4">1m 왕복 · 40~50cm 단차 충격 모사 · 원시 센서값</p>
+
+      <div class="mb-3">
+        <div class="flex justify-between text-[11px] text-slate-500 mb-1">
+          <span>크레인 위치</span>
+          <span id="val-x" class="mono">— cm</span>
+        </div>
+        <div class="crane-track">
+          <div class="crane-danger" title="위험 구간 40~50cm"></div>
+          <div id="crane-dot" class="crane-dot" style="left:0%"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">AAX L</div>
+          <div id="val-aax-l" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">AAY L</div>
+          <div id="val-aay-l" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">AAZ L</div>
+          <div id="val-aaz-l" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">AAX R</div>
+          <div id="val-aax-r" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">AAY R</div>
+          <div id="val-aay-r" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">AAZ R</div>
+          <div id="val-aaz-r" class="mono text-sm">—</div>
+        </div>
+      </div>
+    </article>
+
+    <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
+
+    <!-- 2. AI -->
+    <article id="stage-2" class="panel p-4 flex-1 stage-pulse">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage2)">단계 2</div>
+          <h2 class="text-lg font-semibold">AI 추론</h2>
+        </div>
+        <span class="text-xs text-slate-500 mono">RBF · Crest</span>
+      </div>
+      <p class="text-xs text-slate-400 mb-4">웨이블릿 디노이징 → 파고율 → 레일 변형 예측</p>
+
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
+          <div class="text-[10px] text-amber-400/80 mb-1">CREST LEFT</div>
+          <div id="val-crest-l" class="mono text-2xl font-semibold">—</div>
+          <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
+            <div id="bar-crest-l" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
+          <div class="text-[10px] text-amber-400/80 mb-1">CREST RIGHT</div>
+          <div id="val-crest-r" class="mono text-2xl font-semibold">—</div>
+          <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
+            <div id="bar-crest-r" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="rounded-lg border border-orange-900/40 bg-orange-950/20 p-3">
+          <div class="text-[10px] text-orange-300/80 mb-1">PRED LEFT</div>
+          <div id="val-pred-l" class="mono text-2xl font-semibold">—</div>
+          <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
+            <div id="bar-pred-l" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="rounded-lg border border-orange-900/40 bg-orange-950/20 p-3">
+          <div class="text-[10px] text-orange-300/80 mb-1">PRED RIGHT</div>
+          <div id="val-pred-r" class="mono text-2xl font-semibold">—</div>
+          <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
+            <div id="bar-pred-r" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+      <div class="text-[11px] text-slate-500">PRED_RAIL_DEFORM · 서버 RBF 모델 출력값 그대로 표시</div>
+    </article>
+
+    <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
+
+    <!-- 3. Godot / WS -->
+    <article id="stage-3" class="panel p-4 flex-1 stage-pulse">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage3)">단계 3</div>
+          <h2 class="text-lg font-semibold">Godot 전송</h2>
+        </div>
+        <span id="broadcast-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
+      </div>
+      <p class="text-xs text-slate-400 mb-4">WebSocket 브로드캐스트 · 좌/우 rail_risk 히트맵</p>
+
+      <div class="mb-3">
+        <div class="text-[11px] text-slate-500 mb-1">LEFT rail_risk</div>
+        <div id="risk-left" class="flex gap-0.5"></div>
+      </div>
+      <div class="mb-3">
+        <div class="text-[11px] text-slate-500 mb-1">RIGHT rail_risk</div>
+        <div id="risk-right" class="flex gap-0.5"></div>
+      </div>
+      <div class="rounded-lg bg-slate-900/70 p-2 mono text-[10px] text-slate-400 leading-relaxed max-h-24 overflow-auto" id="payload-preview">페이로드 대기…</div>
+    </article>
+  </section>
+
+  <!-- 실시간 로그 -->
+  <section class="panel p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold">실시간 이벤트</h2>
+      <span id="msg-count" class="mono text-xs text-slate-500">수신 0</span>
+    </div>
+    <div id="event-log" class="mono text-xs max-h-40 overflow-y-auto text-slate-400"></div>
+  </section>
+
+  <footer class="mt-4 flex flex-wrap gap-3 justify-between text-[11px] text-slate-500">
     <span id="last-updated">마지막 수신: —</span>
-    <span id="msg-count">수신 횟수: 0</span>
+    <span>강제 WS: ?ws=wss://호스트:8000/ws</span>
   </footer>
 
   <script>
-    // 서버에서 열면 같은 호스트의 /ws 로 붙음. 파일로 열면 DuckDNS.
-    // 강제: ?ws=ws://127.0.0.1:8000/ws
     function defaultWsUrl() {
       const q = new URLSearchParams(location.search).get('ws');
       if (q) return q;
@@ -160,57 +289,217 @@
         const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
         return scheme + location.host + '/ws';
       }
-      return 'wss://hp028-railtwin.duckdns.org/ws';
+      return 'wss://' + (location.hostname || '127.0.0.1') + ':8000/ws';
     }
+    function defaultHttpBase() {
+      if (location.protocol === 'http:' || location.protocol === 'https:') {
+        return location.origin;
+      }
+      return '';
+    }
+
     const WS_URL = defaultWsUrl();
-    document.getElementById('ws-url-label').textContent = WS_URL;
-    const RECONNECT_MS = 4000;
-    const PRED_MAX = 40;
+    const HTTP_BASE = defaultHttpBase();
+    const RECONNECT_MS = 3000;
     const CREST_MAX = 10;
+    const PRED_MAX = 40;
     const X_MAX = 100;
+
+    document.getElementById('ws-url-label').textContent = WS_URL;
 
     let ws = null;
     let reconnectTimer = null;
     let msgCount = 0;
+    let lastMsgAt = 0;
+    const hzSamples = [];
 
-    const dot = document.getElementById('dot');
-    const statusText = document.getElementById('status-text');
-    const lastUpdated = document.getElementById('last-updated');
-    const msgCountEl = document.getElementById('msg-count');
+    const riskLeftEl = document.getElementById('risk-left');
+    const riskRightEl = document.getElementById('risk-right');
 
-    function setConnected(connected) {
-      if (connected) {
-        dot.className = 'w-3 h-3 rounded-full bg-emerald-400 pulse';
-        statusText.textContent = 'Connected';
-        statusText.className = 'text-sm font-semibold text-emerald-400';
-      } else {
-        dot.className = 'w-3 h-3 rounded-full bg-red-500 pulse';
-        statusText.textContent = 'Disconnected';
-        statusText.className = 'text-sm font-semibold text-red-400';
+    function riskColor(v) {
+      const r = Math.max(0, Math.min(1, Number(v) || 0));
+      if (r < 0.25) return `rgb(59, ${Math.round(130 + r * 80)}, 246)`;
+      if (r < 0.5) return `rgb(${Math.round(34 + (r - 0.25) * 400)}, 197, 94)`;
+      if (r < 0.75) return `rgb(234, ${Math.round(179 - (r - 0.5) * 200)}, 8)`;
+      return `rgb(244, ${Math.round(63 - (r - 0.75) * 40)}, 94)`;
+    }
+
+    function ensureSegments(el, n) {
+      const count = Math.max(1, n || 20);
+      if (el.children.length === count) return;
+      el.innerHTML = '';
+      for (let i = 0; i < count; i++) {
+        const d = document.createElement('div');
+        d.className = 'seg';
+        el.appendChild(d);
       }
     }
 
-    function flashEl(el) {
-      el.classList.remove('flash');
-      void el.offsetWidth;
-      el.classList.add('flash');
+    function paintRisk(el, arr) {
+      if (!Array.isArray(arr)) return;
+      ensureSegments(el, arr.length);
+      for (let i = 0; i < arr.length; i++) {
+        el.children[i].style.backgroundColor = riskColor(arr[i]);
+        el.children[i].title = `${i}: ${Number(arr[i]).toFixed(2)}`;
+      }
     }
 
-    function setText(id, value, digits = 2) {
+    function setConnected(ok) {
+      const dot = document.getElementById('dot');
+      const st = document.getElementById('status-text');
+      if (ok) {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 hz-live';
+        st.textContent = 'WebSocket 연결됨';
+        st.className = 'text-sm font-semibold text-emerald-400';
+        document.getElementById('broadcast-badge').textContent = '브로드캐스트 중';
+        document.getElementById('broadcast-badge').className =
+          'text-xs px-2 py-1 rounded-full border border-sky-700 text-sky-300';
+      } else {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500 hz-live';
+        st.textContent = '연결 끊김';
+        st.className = 'text-sm font-semibold text-rose-400';
+        document.getElementById('broadcast-badge').textContent = '대기';
+        document.getElementById('broadcast-badge').className =
+          'text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400';
+      }
+    }
+
+    function pulse(id) {
       const el = document.getElementById(id);
-      if (value === null || value === undefined) {
-        el.textContent = '—';
-      } else {
-        el.textContent = Number(value).toFixed(digits);
-      }
-      flashEl(el);
+      el.classList.remove('on');
+      void el.offsetWidth;
+      el.classList.add('on');
+    }
+
+    function fmt(v, d = 2) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+      return Number(v).toFixed(d);
     }
 
     function setBar(id, value, max) {
       const el = document.getElementById(id);
       if (value === null || value === undefined) return;
-      const pct = Math.min(100, Math.max(0, (Number(value) / max) * 100));
-      el.style.width = pct + '%';
+      el.style.width = Math.min(100, Math.max(0, (Number(value) / max) * 100)) + '%';
+    }
+
+    function pushLog(line) {
+      const box = document.getElementById('event-log');
+      const row = document.createElement('div');
+      row.className = 'log-line py-1';
+      const t = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+      row.textContent = `[${t}] ${line}`;
+      box.prepend(row);
+      while (box.children.length > 40) box.removeChild(box.lastChild);
+    }
+
+    function updateHz() {
+      const now = performance.now();
+      if (lastMsgAt > 0) {
+        const dt = now - lastMsgAt;
+        if (dt > 0 && dt < 2000) {
+          hzSamples.push(1000 / dt);
+          if (hzSamples.length > 20) hzSamples.shift();
+          const avg = hzSamples.reduce((a, b) => a + b, 0) / hzSamples.length;
+          document.getElementById('meta-hz').textContent = avg.toFixed(1) + ' Hz';
+        }
+      }
+      lastMsgAt = now;
+    }
+
+    async function refreshHealth() {
+      if (!HTTP_BASE) return;
+      try {
+        const [h, c] = await Promise.all([
+          fetch(HTTP_BASE + '/', { cache: 'no-store' }).then((r) => r.json()),
+          fetch(HTTP_BASE + '/ws/clients', { cache: 'no-store' }).then((r) => r.json()),
+        ]);
+        document.getElementById('meta-source').textContent = h.demo_mode ? '더미 스트리머' : '시리얼 ESP32';
+        document.getElementById('meta-source').style.color = h.demo_mode ? 'var(--stage1)' : '#a78bfa';
+        document.getElementById('meta-ai').textContent = h.ai_model_loaded
+          ? `로드됨 (${h.ai_model_device || 'cpu'})`
+          : '미로드';
+        document.getElementById('meta-ai').style.color = h.ai_model_loaded ? 'var(--stage2)' : 'var(--danger)';
+        document.getElementById('meta-ws').textContent = String(c.connected_clients ?? h.ws_clients ?? '—');
+        document.getElementById('meta-queue').textContent =
+          `${h.queue_size ?? 0} / ${h.queue_max ?? '—'} · 수신 ${msgCount}`;
+      } catch (e) {
+        /* 헬스 실패해도 WS만 되면 표시는 유지 */
+      }
+    }
+
+    function applyPayload(data) {
+      const left = data.left && typeof data.left === 'object' ? data.left : data;
+      const right = data.right && typeof data.right === 'object' ? data.right : null;
+      const x = left.distance_x ?? left.DIST ?? (right && (right.distance_x ?? right.DIST));
+
+      pulse('stage-1');
+      pulse('stage-2');
+      pulse('stage-3');
+      updateHz();
+
+      const xn = Number(x);
+      document.getElementById('val-x').textContent = Number.isFinite(xn) ? `${xn.toFixed(0)} cm` : '— cm';
+      if (Number.isFinite(xn)) {
+        document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / X_MAX) * 100)) + '%';
+        const danger = xn >= 40 && xn <= 50;
+        const badge = document.getElementById('zone-badge');
+        badge.textContent = danger ? '위험 구간 (단차)' : '정상 구간';
+        badge.className = danger
+          ? 'text-xs px-2 py-1 rounded-full border border-rose-700 text-rose-300'
+          : 'text-xs px-2 py-1 rounded-full border border-teal-800 text-teal-300';
+      }
+
+      document.getElementById('val-aax-l').textContent = fmt(left.AAX, 3);
+      document.getElementById('val-aay-l').textContent = fmt(left.AAY, 3);
+      document.getElementById('val-aaz-l').textContent = fmt(left.AAZ, 3);
+      if (right) {
+        document.getElementById('val-aax-r').textContent = fmt(right.AAX, 3);
+        document.getElementById('val-aay-r').textContent = fmt(right.AAY, 3);
+        document.getElementById('val-aaz-r').textContent = fmt(right.AAZ, 3);
+      }
+
+      document.getElementById('val-crest-l').textContent = fmt(left.CREST);
+      setBar('bar-crest-l', left.CREST, CREST_MAX);
+      document.getElementById('val-pred-l').textContent = fmt(left.PRED_RAIL_DEFORM);
+      setBar('bar-pred-l', left.PRED_RAIL_DEFORM, PRED_MAX);
+      if (right) {
+        document.getElementById('val-crest-r').textContent = fmt(right.CREST);
+        setBar('bar-crest-r', right.CREST, CREST_MAX);
+        document.getElementById('val-pred-r').textContent = fmt(right.PRED_RAIL_DEFORM);
+        setBar('bar-pred-r', right.PRED_RAIL_DEFORM, PRED_MAX);
+      }
+
+      paintRisk(riskLeftEl, left.rail_risk);
+      if (right) paintRisk(riskRightEl, right.rail_risk);
+
+      const preview = {
+        left: {
+          distance_x: left.distance_x ?? left.DIST,
+          CREST: left.CREST,
+          PRED_RAIL_DEFORM: left.PRED_RAIL_DEFORM,
+          rail_risk_len: Array.isArray(left.rail_risk) ? left.rail_risk.length : 0,
+        },
+        right: right
+          ? {
+              distance_x: right.distance_x ?? right.DIST,
+              CREST: right.CREST,
+              PRED_RAIL_DEFORM: right.PRED_RAIL_DEFORM,
+              rail_risk_len: Array.isArray(right.rail_risk) ? right.rail_risk.length : 0,
+            }
+          : null,
+      };
+      document.getElementById('payload-preview').textContent = JSON.stringify(preview);
+
+      msgCount += 1;
+      document.getElementById('msg-count').textContent = `수신 ${msgCount.toLocaleString()}`;
+      document.getElementById('last-updated').textContent =
+        `마지막 수신: ${new Date().toLocaleTimeString('ko-KR')}`;
+      document.getElementById('meta-queue').textContent =
+        document.getElementById('meta-queue').textContent.replace(/수신 \d+/, `수신 ${msgCount}`);
+
+      pushLog(
+        `x=${fmt(x, 0)}cm · CREST L/R=${fmt(left.CREST)}/${fmt(right?.CREST)} · PRED L/R=${fmt(left.PRED_RAIL_DEFORM)}/${fmt(right?.PRED_RAIL_DEFORM)}`
+      );
     }
 
     function connect() {
@@ -218,63 +507,32 @@
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
-
       ws = new WebSocket(WS_URL);
-
       ws.onopen = () => {
         setConnected(true);
-        console.log('[WS] 연결됨:', WS_URL);
+        pushLog(`WS 연결: ${WS_URL}`);
+        refreshHealth();
       };
-
-      ws.onmessage = (event) => {
-        let data;
+      ws.onmessage = (ev) => {
         try {
-          data = JSON.parse(event.data);
+          applyPayload(JSON.parse(ev.data));
         } catch {
-          console.warn('[WS] JSON 파싱 실패:', event.data);
-          return;
+          pushLog('JSON 파싱 실패');
         }
-
-        const left = data.left && typeof data.left === 'object' ? data.left : data;
-        const right = data.right && typeof data.right === 'object' ? data.right : data;
-        const x = left.distance_x ?? left.DIST ?? right.distance_x ?? right.DIST;
-
-        setText('val-pred-left', left.PRED_RAIL_DEFORM);
-        setBar('bar-pred-left', left.PRED_RAIL_DEFORM, PRED_MAX);
-        setText('val-pred-right', right.PRED_RAIL_DEFORM);
-        setBar('bar-pred-right', right.PRED_RAIL_DEFORM, PRED_MAX);
-        setText('val-crest-left', left.CREST);
-        setBar('bar-crest-left', left.CREST, CREST_MAX);
-        setText('val-crest-right', right.CREST);
-        setBar('bar-crest-right', right.CREST, CREST_MAX);
-        setText('val-x', x, 0);
-        setBar('bar-x', x, X_MAX);
-
-        setText('val-aax-left', left.AAX);
-        setText('val-aay-left', left.AAY);
-        setText('val-aaz-left', left.AAZ);
-        setText('val-dist-left', left.DIST);
-        setText('val-aax-right', right.AAX);
-        setText('val-aay-right', right.AAY);
-        setText('val-aaz-right', right.AAZ);
-        setText('val-dist-right', right.DIST);
-
-        msgCount++;
-        lastUpdated.textContent = `마지막 수신: ${new Date().toLocaleTimeString('ko-KR')}`;
-        msgCountEl.textContent = `수신 횟수: ${msgCount.toLocaleString()}`;
       };
-
-      ws.onclose = (event) => {
+      ws.onclose = () => {
         setConnected(false);
-        console.warn(`[WS] 연결 종료 (code=${event.code}) — ${RECONNECT_MS / 1000}초 후 재연결`);
+        pushLog('WS 종료 — 재연결 대기');
         reconnectTimer = setTimeout(connect, RECONNECT_MS);
       };
-
       ws.onerror = () => ws.close();
     }
 
+    ensureSegments(riskLeftEl, 20);
+    ensureSegments(riskRightEl, 20);
     connect();
+    refreshHealth();
+    setInterval(refreshHealth, 5000);
   </script>
-
 </body>
 </html>
