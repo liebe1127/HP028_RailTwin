@@ -371,6 +371,16 @@ def update_rail_risk(
     return list(state)
 
 
+def reset_rail_risk_state(side: str | None = None) -> dict[str, list[float]]:
+    """누적 rail_risk를 0으로 초기화. side가 None이면 left/right 모두."""
+    targets = RAIL_SIDES if side is None else (side,)
+    for s in targets:
+        if s not in RAIL_SIDES:
+            continue
+        rail_risk_state[s] = [0.0] * RAIL_SEGMENT_COUNT
+    return {s: list(rail_risk_state[s]) for s in RAIL_SIDES}
+
+
 def predict_rail_deform(
     data: dict, side: str = "left"
 ) -> tuple[float | None, float | None]:
@@ -818,6 +828,19 @@ async def dashboard():
     if not DASHBOARD_HTML.is_file():
         return {"error": "frontend/index.html 이 서버에 없습니다"}
     return FileResponse(DASHBOARD_HTML)
+
+
+@app.post("/rail_risk/reset", summary="레일 구간 위험도 히트맵 초기화")
+async def rail_risk_reset(side: str | None = None):
+    """
+    max 누적된 rail_risk를 0으로 리셋한다.
+    query: side=left|right (생략 시 양쪽)
+    """
+    if side is not None and side not in RAIL_SIDES:
+        return {"ok": False, "error": f"side must be one of {RAIL_SIDES}"}
+    state = reset_rail_risk_state(side)
+    logger.info("rail_risk 리셋 완료 (side=%s)", side or "all")
+    return {"ok": True, "side": side or "all", "rail_risk": state}
 
 
 # ─────────────────────────────────────────────

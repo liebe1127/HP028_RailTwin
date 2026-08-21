@@ -246,14 +246,20 @@
 
     <!-- 3. Godot / WS -->
     <article id="stage-3" class="panel p-4 flex-1 stage-pulse">
-      <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center justify-between mb-3 gap-2">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage3)">단계 3</div>
           <h2 class="text-lg font-semibold">Godot 전송</h2>
         </div>
-        <span id="broadcast-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
+        <div class="flex items-center gap-2">
+          <button id="btn-reset-risk" type="button"
+            class="text-xs px-2.5 py-1.5 rounded-lg border border-slate-600 bg-slate-900/80 text-slate-200 hover:border-sky-600 hover:text-sky-200 transition-colors">
+            위험도 리셋
+          </button>
+          <span id="broadcast-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
+        </div>
       </div>
-      <p class="text-xs text-slate-400 mb-4">WebSocket 브로드캐스트 · 좌/우 rail_risk 히트맵</p>
+      <p class="text-xs text-slate-400 mb-4">WebSocket 브로드캐스트 · 좌/우 rail_risk 히트맵 (누적값)</p>
 
       <div class="mb-3">
         <div class="text-[11px] text-slate-500 mb-1">LEFT rail_risk</div>
@@ -527,6 +533,38 @@
       };
       ws.onerror = () => ws.close();
     }
+
+    function clearRiskUi() {
+      const zeros = Array(riskLeftEl.children.length || 20).fill(0);
+      paintRisk(riskLeftEl, zeros);
+      paintRisk(riskRightEl, zeros);
+    }
+
+    async function resetRailRisk() {
+      const btn = document.getElementById('btn-reset-risk');
+      if (!HTTP_BASE) {
+        pushLog('리셋 실패: 대시보드를 서버 /dashboard 로 열어주세요');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '리셋 중…';
+      try {
+        const res = await fetch(HTTP_BASE + '/rail_risk/reset', { method: 'POST', cache: 'no-store' });
+        const body = await res.json();
+        if (!res.ok || !body.ok) {
+          throw new Error(body.error || res.statusText);
+        }
+        clearRiskUi();
+        pushLog('rail_risk 리셋 완료 (서버 누적값 초기화)');
+      } catch (err) {
+        pushLog('리셋 실패: ' + (err && err.message ? err.message : err));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '위험도 리셋';
+      }
+    }
+
+    document.getElementById('btn-reset-risk').addEventListener('click', resetRailRisk);
 
     ensureSegments(riskLeftEl, 20);
     ensureSegments(riskRightEl, 20);
