@@ -18,8 +18,10 @@ extends Node3D
 ##
 ## Godot 4.7 WebSocket: poll() + was_string_packet() + STATE_* 처리
 
-## 클라우드: wss://hp028-railtwin.duckdns.org/ws  |  로컬: ws://127.0.0.1:8000/ws
-@export var websocket_url: String = "wss://hp028-railtwin.duckdns.org/ws"
+## 클라우드: wss://223.130.128.198:8000/ws  |  로컬: ws://127.0.0.1:8000/ws
+@export var websocket_url: String = "wss://223.130.128.198:8000/ws"
+## 자체 서명(NCP) 인증서면 true — TLS 검증 생략(시연용). Let's Encrypt면 false.
+@export var tls_insecure: bool = true
 @export var reconnect_sec: float = 3.0
 
 @export var crane_path: NodePath
@@ -92,12 +94,17 @@ func _connect_socket() -> void:
 	_logged_close = false
 	_reconnect_left = -1.0
 	socket = WebSocketPeer.new()
-	var err: Error = socket.connect_to_url(websocket_url)
+	var err: Error
+	if websocket_url.begins_with("wss://") and tls_insecure:
+		# 자체 서명 인증서: 기본 검증은 handshake -9984 등으로 실패함
+		err = socket.connect_to_url(websocket_url, TLSOptions.client_unsafe())
+	else:
+		err = socket.connect_to_url(websocket_url)
 	if err != OK:
 		push_error("[RailTwin] WebSocket 연결 실패: %s (Error %s)" % [websocket_url, err])
 		_reconnect_left = reconnect_sec
 		return
-	print("[RailTwin] Connecting to %s ..." % websocket_url)
+	print("[RailTwin] Connecting to %s (tls_insecure=%s) ..." % [websocket_url, tls_insecure])
 
 
 func _poll_socket(delta: float) -> void:
