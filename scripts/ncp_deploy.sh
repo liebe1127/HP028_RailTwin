@@ -19,8 +19,8 @@ if [[ ! -f "$APP_DIR/cert.pem" || ! -f "$APP_DIR/key.pem" ]]; then
   echo "[deploy] WARN: cert.pem/key.pem 없음 — HTTPS 기동 전 인증서를 배치하세요." >&2
 fi
 
-if [[ -x "$APP_DIR/venv/bin/pip" ]]; then
-  echo "[deploy] pip install (no-cache)"
+if [[ "${INSTALL_DEPS:-0}" == "1" && -x "$APP_DIR/venv/bin/pip" ]]; then
+  echo "[deploy] pip install (no-cache) INSTALL_DEPS=1"
   "$APP_DIR/venv/bin/pip" install --no-cache-dir -r "$APP_DIR/requirements.txt"
 fi
 
