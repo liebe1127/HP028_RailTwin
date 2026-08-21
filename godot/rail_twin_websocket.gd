@@ -1,27 +1,34 @@
 extends Node3D
 ## 하부 레일 변형 예측 디지털 트윈 — FastAPI WebSocket 연동 (Godot 4.7)
 ##
-## 서버가 보내는 rail_risk[] 로 레일 구간별 위험색을 칠한다.
-## (전체 레일 단일 색이 아님)
+## 서버 페이로드:
+##   { "left": { distance_x, CREST, PRED_RAIL_DEFORM, rail_risk[], ... },
+##     "right": { ... },
+##     "source": "demo" }
+## 구 평면 페이로드(left/right 없음)도 호환 — 양쪽 레일에 같은 값을 적용.
 ##
 ## 권장 씬 구조:
 ##   RailTwinRoot (Node3D)  ← 이 스크립트
 ##    ├─ GantryModel (FBX)
-##    │    ├─ .../Trolley   ← crane_path
-##    │    └─ .../Rail      ← rail_path (원본, 선택적으로 숨김)
-##    └─ RailRiskSegments   ← 자동 생성되거나 Inspector로 지정
+##    │    ├─ .../Trolley          ← crane_path
+##    │    ├─ .../RailLeft         ← left_rail_path (선택)
+##    │    └─ .../RailRight        ← right_rail_path (선택)
+##    ├─ RailRiskSegmentsLeft      ← 자동 생성 가능
+##    └─ RailRiskSegmentsRight
 ##
 ## Godot 4.7 WebSocket: poll() + was_string_packet() + STATE_* 처리
-## Docs: https://docs.godotengine.org/en/4.7/tutorials/networking/websocket.html
 
 ## 클라우드: wss://hp028-railtwin.duckdns.org/ws  |  로컬: ws://127.0.0.1:8000/ws
 @export var websocket_url: String = "wss://hp028-railtwin.duckdns.org/ws"
 @export var reconnect_sec: float = 3.0
 
 @export var crane_path: NodePath
-@export var rail_path: NodePath
-## 비어 있으면 자식 "RailRiskSegments"를 쓰거나 자동 생성
-@export var rail_segments_root_path: NodePath
+@export var rail_path: NodePath  ## 구버전 호환 — 지정 시 왼쪽 레일로 사용
+@export var left_rail_path: NodePath
+@export var right_rail_path: NodePath
+@export var rail_segments_root_path: NodePath  ## 구버전 호환 — 왼쪽 세그먼트 루트
+@export var left_segments_root_path: NodePath
+@export var right_segments_root_path: NodePath
 
 @export var travel_axis: String = "x"
 @export var rail_length_m: float = 1.0
@@ -31,6 +38,8 @@ extends Node3D
 @export var segment_width: float = 0.08
 @export var segment_height: float = 0.04
 @export var segment_gap: float = 0.002
+## 좌/우 레일 사이 간격(m). travel이 x면 z로, z면 x로 벌림.
+@export var rail_pair_gap: float = 0.35
 
 @export var crane_name_hints: PackedStringArray = [
 	"crane", "trolley", "gantry", "bridge", "hoist", "carriage"
@@ -48,10 +57,14 @@ var target_crest: float = 0.0
 var target_rail_deform: float = 0.0
 
 var crane_node: Node3D
-var rail_mesh: MeshInstance3D
-var segments_root: Node3D
-var segment_meshes: Array[MeshInstance3D] = []
-var rail_risk: PackedFloat32Array = PackedFloat32Array()
+var left_rail_mesh: MeshInstance3D
+var right_rail_mesh: MeshInstance3D
+var left_root: Node3D
+var right_root: Node3D
+var left_meshes: Array[MeshInstance3D] = []
+var right_meshes: Array[MeshInstance3D] = []
+var left_risk: PackedFloat32Array = PackedFloat32Array()
+var right_risk: PackedFloat32Array = PackedFloat32Array()
 
 const LERP_SPEED: float = 10.0
 
@@ -91,7 +104,6 @@ func _poll_socket(delta: float) -> void:
 	if not _want_socket:
 		return
 
-	# 재연결 대기 중이면 타이머만 감소 (닫힌 peer는 poll 불필요)
 	if _reconnect_left >= 0.0:
 		_reconnect_left -= delta
 		if _reconnect_left <= 0.0:
@@ -104,7 +116,6 @@ func _poll_socket(delta: float) -> void:
 	if state == WebSocketPeer.STATE_OPEN:
 		while socket.get_available_packet_count() > 0:
 			var packet: PackedByteArray = socket.get_packet()
-			# Godot 4.7: 텍스트 프레임만 JSON으로 처리
 			if not socket.was_string_packet():
 				continue
 			var text: String = packet.get_string_from_utf8()
@@ -113,7 +124,6 @@ func _poll_socket(delta: float) -> void:
 				_apply_payload(parsed as Dictionary)
 
 	elif state == WebSocketPeer.STATE_CLOSING:
-		# clean close를 위해 계속 poll
 		pass
 
 	elif state == WebSocketPeer.STATE_CLOSED:
@@ -130,73 +140,111 @@ func _poll_socket(delta: float) -> void:
 func _resolve_nodes() -> void:
 	if crane_path != NodePath(""):
 		crane_node = get_node_or_null(crane_path) as Node3D
-	if rail_path != NodePath(""):
-		rail_mesh = get_node_or_null(rail_path) as MeshInstance3D
-
 	if crane_node == null:
 		crane_node = _find_node3d_by_hints(crane_name_hints)
-	if rail_mesh == null:
-		rail_mesh = _find_mesh_by_hints(rail_name_hints)
 
-	if rail_segments_root_path != NodePath(""):
-		segments_root = get_node_or_null(rail_segments_root_path) as Node3D
+	if left_rail_path != NodePath(""):
+		left_rail_mesh = get_node_or_null(left_rail_path) as MeshInstance3D
+	if left_rail_mesh == null and rail_path != NodePath(""):
+		left_rail_mesh = get_node_or_null(rail_path) as MeshInstance3D
+	if right_rail_path != NodePath(""):
+		right_rail_mesh = get_node_or_null(right_rail_path) as MeshInstance3D
+	if left_rail_mesh == null:
+		left_rail_mesh = _find_mesh_by_hints(rail_name_hints)
 
-	if segments_root == null:
-		segments_root = get_node_or_null("RailRiskSegments") as Node3D
+	if left_segments_root_path != NodePath(""):
+		left_root = get_node_or_null(left_segments_root_path) as Node3D
+	if left_root == null and rail_segments_root_path != NodePath(""):
+		left_root = get_node_or_null(rail_segments_root_path) as Node3D
+	if left_root == null:
+		left_root = get_node_or_null("RailRiskSegmentsLeft") as Node3D
+	if left_root == null:
+		left_root = get_node_or_null("RailRiskSegments") as Node3D
+
+	if right_segments_root_path != NodePath(""):
+		right_root = get_node_or_null(right_segments_root_path) as Node3D
+	if right_root == null:
+		right_root = get_node_or_null("RailRiskSegmentsRight") as Node3D
 
 	if crane_node != null:
 		print("[RailTwin] crane: ", crane_node.get_path())
 	else:
 		push_warning("[RailTwin] crane 노드 없음 → Crane Path 지정")
 
-	if rail_mesh != null:
-		print("[RailTwin] rail mesh: ", rail_mesh.get_path())
-		if hide_source_rail:
-			rail_mesh.visible = false
-	else:
-		push_warning("[RailTwin] rail mesh 없음 — 세그먼트를 원점 기준으로 생성")
+	for mesh in [left_rail_mesh, right_rail_mesh]:
+		if mesh != null and hide_source_rail:
+			mesh.visible = false
 
 
 func _setup_segments() -> void:
-	segment_meshes.clear()
+	if left_root == null:
+		left_root = Node3D.new()
+		left_root.name = "RailRiskSegmentsLeft"
+		add_child(left_root)
+	if right_root == null:
+		right_root = Node3D.new()
+		right_root.name = "RailRiskSegmentsRight"
+		add_child(right_root)
 
-	if segments_root == null:
-		segments_root = Node3D.new()
-		segments_root.name = "RailRiskSegments"
-		add_child(segments_root)
+	left_meshes = _collect_or_build_side(left_root, left_rail_mesh, "L", -rail_pair_gap * 0.5)
+	right_meshes = _collect_or_build_side(right_root, right_rail_mesh, "R", rail_pair_gap * 0.5)
 
-	# 기존 자식 MeshInstance3D가 있으면 그대로 사용
-	for child in segments_root.get_children():
+	left_risk = PackedFloat32Array()
+	left_risk.resize(left_meshes.size())
+	left_risk.fill(0.0)
+	right_risk = PackedFloat32Array()
+	right_risk.resize(right_meshes.size())
+	right_risk.fill(0.0)
+	_apply_segment_colors(left_meshes, left_risk)
+	_apply_segment_colors(right_meshes, right_risk)
+
+	print(
+		"[RailTwin] left_seg=%d right_seg=%d length=%.2fm"
+		% [left_meshes.size(), right_meshes.size(), rail_length_m]
+	)
+
+
+func _collect_or_build_side(
+	root: Node3D,
+	source_mesh: MeshInstance3D,
+	prefix: String,
+	lateral: float
+) -> Array[MeshInstance3D]:
+	var meshes: Array[MeshInstance3D] = []
+	for child in root.get_children():
 		if child is MeshInstance3D:
-			segment_meshes.append(child as MeshInstance3D)
-
-	if segment_meshes.is_empty() and auto_build_segments:
-		_build_segment_meshes()
-
-	rail_risk = PackedFloat32Array()
-	rail_risk.resize(segment_meshes.size())
-	rail_risk.fill(0.0)
-	_apply_segment_colors()
-
-	print("[RailTwin] segments=%d length=%.2fm" % [segment_meshes.size(), rail_length_m])
+			meshes.append(child as MeshInstance3D)
+	if meshes.is_empty() and auto_build_segments:
+		meshes = _build_segment_meshes(root, source_mesh, prefix, lateral)
+	return meshes
 
 
-func _build_segment_meshes() -> void:
-	for child in segments_root.get_children():
+func _build_segment_meshes(
+	root: Node3D,
+	source_mesh: MeshInstance3D,
+	prefix: String,
+	lateral: float
+) -> Array[MeshInstance3D]:
+	for child in root.get_children():
 		child.queue_free()
-	segment_meshes.clear()
 
+	var meshes: Array[MeshInstance3D] = []
 	var n: int = maxi(segment_count, 1)
 	var seg_len: float = rail_length_m / float(n)
 	var box_len: float = maxf(seg_len - segment_gap, 0.001)
 
 	var origin := Vector3.ZERO
-	if rail_mesh != null:
-		origin = rail_mesh.position
+	if source_mesh != null:
+		origin = source_mesh.position
+	else:
+		if travel_axis.to_lower() == "z":
+			origin = Vector3(lateral, 0.0, 0.0)
+		else:
+			origin = Vector3(0.0, 0.0, lateral)
 
 	for i in range(n):
 		var mi := MeshInstance3D.new()
-		mi.name = "RailSeg_%02d" % i
+		mi.name = "RailSeg_%s_%02d" % [prefix, i]
 		var box := BoxMesh.new()
 		if travel_axis.to_lower() == "z":
 			box.size = Vector3(segment_width, segment_height, box_len)
@@ -215,11 +263,36 @@ func _build_segment_meshes() -> void:
 		else:
 			mi.position = origin + Vector3(center, segment_height * 0.5, 0.0)
 
-		segments_root.add_child(mi)
-		segment_meshes.append(mi)
+		root.add_child(mi)
+		meshes.append(mi)
+	return meshes
+
+
+func _side_dict(data: Dictionary, key: String) -> Dictionary:
+	if data.has(key) and data[key] is Dictionary:
+		return data[key] as Dictionary
+	return {}
 
 
 func _apply_payload(data: Dictionary) -> void:
+	var left: Dictionary = _side_dict(data, "left")
+	var right: Dictionary = _side_dict(data, "right")
+	# 구 평면 페이로드: left/right 키가 없으면 전체를 양쪽에 적용
+	if left.is_empty() and right.is_empty():
+		left = data
+		right = data
+
+	var loc: Dictionary = left if not left.is_empty() else right
+	_apply_shared_fields(loc)
+	if not left.is_empty() and left.has("rail_risk") and left["rail_risk"] is Array:
+		left_risk = _update_rail_risk_from_array(left["rail_risk"] as Array, left_meshes)
+		_apply_segment_colors(left_meshes, left_risk)
+	if not right.is_empty() and right.has("rail_risk") and right["rail_risk"] is Array:
+		right_risk = _update_rail_risk_from_array(right["rail_risk"] as Array, right_meshes)
+		_apply_segment_colors(right_meshes, right_risk)
+
+
+func _apply_shared_fields(data: Dictionary) -> void:
 	if data.has("distance_x") and data["distance_x"] != null:
 		target_distance_m = float(data["distance_x"]) / 100.0
 	elif data.has("DIST") and data["DIST"] != null:
@@ -242,27 +315,23 @@ func _apply_payload(data: Dictionary) -> void:
 			segment_count = sc
 			_setup_segments()
 
-	if data.has("rail_risk") and data["rail_risk"] is Array:
-		_update_rail_risk_from_array(data["rail_risk"] as Array)
 
-
-func _update_rail_risk_from_array(arr: Array) -> void:
-	var n: int = mini(arr.size(), segment_meshes.size())
-	if n <= 0:
-		return
-	if rail_risk.size() != segment_meshes.size():
-		rail_risk.resize(segment_meshes.size())
-		rail_risk.fill(0.0)
-
+func _update_rail_risk_from_array(
+	arr: Array, meshes: Array[MeshInstance3D]
+) -> PackedFloat32Array:
+	var risk := PackedFloat32Array()
+	risk.resize(meshes.size())
+	risk.fill(0.0)
+	var n: int = mini(arr.size(), meshes.size())
 	for i in range(n):
-		rail_risk[i] = clampf(float(arr[i]), 0.0, 1.0)
-	_apply_segment_colors()
+		risk[i] = clampf(float(arr[i]), 0.0, 1.0)
+	return risk
 
 
-func _apply_segment_colors() -> void:
-	var n: int = mini(rail_risk.size(), segment_meshes.size())
+func _apply_segment_colors(meshes: Array[MeshInstance3D], risk: PackedFloat32Array) -> void:
+	var n: int = mini(risk.size(), meshes.size())
 	for i in range(n):
-		var mi: MeshInstance3D = segment_meshes[i]
+		var mi: MeshInstance3D = meshes[i]
 		var mat: Material = mi.get_active_material(0)
 		if mat == null:
 			mat = StandardMaterial3D.new()
@@ -271,19 +340,19 @@ func _apply_segment_colors() -> void:
 		if std == null:
 			std = StandardMaterial3D.new()
 			mi.set_surface_override_material(0, std)
-		std.albedo_color = _risk_to_color(rail_risk[i])
+		std.albedo_color = _risk_to_color(risk[i])
 
 
 ## 범례: 파랑(정상) → 초록(낮음) → 노랑(중간) → 빨강(높음)
 func _risk_to_color(risk: float) -> Color:
 	var r: float = clampf(risk, 0.0, 1.0)
 	if r < 0.15:
-		return Color(0.25, 0.50, 0.95)  # 정상 파랑
+		return Color(0.25, 0.50, 0.95)
 	if r < 0.40:
-		return Color(0.20, 0.85, 0.35)  # 낮음 초록
+		return Color(0.20, 0.85, 0.35)
 	if r < 0.70:
-		return Color(0.95, 0.85, 0.15)  # 중간 노랑
-	return Color(0.95, 0.22, 0.18)  # 높음 빨강
+		return Color(0.95, 0.85, 0.15)
+	return Color(0.95, 0.22, 0.18)
 
 
 func _find_node3d_by_hints(hints: PackedStringArray) -> Node3D:
@@ -327,7 +396,7 @@ func _all_descendants(root: Node) -> Array[Node]:
 func _print_scene_tree_hint() -> void:
 	print("[RailTwin] === scene tree ===")
 	_print_tree_recursive(self, 0)
-	print("[RailTwin] === set Crane Path / Rail Path in Inspector ===")
+	print("[RailTwin] === set Crane Path / Left·Right Rail Path in Inspector ===")
 
 
 func _print_tree_recursive(node: Node, depth: int) -> void:

@@ -46,9 +46,21 @@
         <span class="text-xs font-semibold uppercase tracking-widest text-amber-400">레일 변형 예측</span>
         <span class="text-xs text-slate-500">PRED_RAIL_DEFORM</span>
       </div>
-      <div id="val-pred" class="text-4xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
-        <div id="bar-pred" class="h-full bg-amber-500 rounded-full transition-all duration-300" style="width:0%"></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <div class="text-xs text-slate-500 mb-1">LEFT</div>
+          <div id="val-pred-left" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
+          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
+            <div id="bar-pred-left" class="h-full bg-amber-500 rounded-full transition-all duration-300" style="width:0%"></div>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs text-slate-500 mb-1">RIGHT</div>
+          <div id="val-pred-right" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
+          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
+            <div id="bar-pred-right" class="h-full bg-amber-500 rounded-full transition-all duration-300" style="width:0%"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -57,9 +69,21 @@
         <span class="text-xs font-semibold uppercase tracking-widest text-rose-400">파고율 (단차 충격)</span>
         <span class="text-xs text-slate-500">CREST</span>
       </div>
-      <div id="val-crest" class="text-4xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-      <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
-        <div id="bar-crest" class="h-full bg-rose-500 rounded-full transition-all duration-300" style="width:0%"></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <div class="text-xs text-slate-500 mb-1">LEFT</div>
+          <div id="val-crest-left" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
+          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
+            <div id="bar-crest-left" class="h-full bg-rose-500 rounded-full transition-all duration-300" style="width:0%"></div>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs text-slate-500 mb-1">RIGHT</div>
+          <div id="val-crest-right" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
+          <div class="h-1 mt-2 rounded-full bg-slate-700 overflow-hidden">
+            <div id="bar-crest-right" class="h-full bg-rose-500 rounded-full transition-all duration-300" style="width:0%"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -75,36 +99,49 @@
     </div>
   </section>
 
-  <!-- 센서 원시값 -->
-  <main class="grid grid-cols-2 gap-4 md:grid-cols-4">
-    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-indigo-400">AAX</span>
-        <span class="text-xs text-slate-500">m/s²</span>
+  <main class="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <section class="rounded-2xl bg-slate-800 border border-slate-700 p-5">
+      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">LEFT 가속도</h2>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <div class="text-xs text-indigo-400">AAX</div>
+          <div id="val-aax-left" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
+        <div>
+          <div class="text-xs text-violet-400">AAY</div>
+          <div id="val-aay-left" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
+        <div>
+          <div class="text-xs text-sky-400">AAZ</div>
+          <div id="val-aaz-left" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
+        <div>
+          <div class="text-xs text-teal-400">DIST</div>
+          <div id="val-dist-left" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
       </div>
-      <div id="val-aax" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-    </div>
-    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-violet-400">AAY</span>
-        <span class="text-xs text-slate-500">m/s²</span>
+    </section>
+    <section class="rounded-2xl bg-slate-800 border border-slate-700 p-5">
+      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">RIGHT 가속도</h2>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <div class="text-xs text-indigo-400">AAX</div>
+          <div id="val-aax-right" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
+        <div>
+          <div class="text-xs text-violet-400">AAY</div>
+          <div id="val-aay-right" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
+        <div>
+          <div class="text-xs text-sky-400">AAZ</div>
+          <div id="val-aaz-right" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
+        <div>
+          <div class="text-xs text-teal-400">DIST</div>
+          <div id="val-dist-right" class="text-2xl font-bold tabular-nums">—</div>
+        </div>
       </div>
-      <div id="val-aay" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-    </div>
-    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-sky-400">AAZ</span>
-        <span class="text-xs text-slate-500">m/s²</span>
-      </div>
-      <div id="val-aaz" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-    </div>
-    <div class="rounded-2xl bg-slate-800 border border-slate-700 p-5 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-widest text-teal-400">DIST</span>
-        <span class="text-xs text-slate-500">cm</span>
-      </div>
-      <div id="val-dist" class="text-3xl font-bold text-white tabular-nums rounded-lg px-1">—</div>
-    </div>
+    </section>
   </main>
 
   <footer class="mt-6 flex items-center justify-between text-xs text-slate-500">
@@ -114,9 +151,18 @@
   </footer>
 
   <script>
-    // 클라우드 HTTPS: wss://…  |  로컬: ?ws=ws://127.0.0.1:8000/ws
-    const WS_URL = new URLSearchParams(location.search).get('ws')
-      || 'wss://hp028-railtwin.duckdns.org/ws';
+    // 서버에서 열면 같은 호스트의 /ws 로 붙음. 파일로 열면 DuckDNS.
+    // 강제: ?ws=ws://127.0.0.1:8000/ws
+    function defaultWsUrl() {
+      const q = new URLSearchParams(location.search).get('ws');
+      if (q) return q;
+      if (location.protocol === 'http:' || location.protocol === 'https:') {
+        const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+        return scheme + location.host + '/ws';
+      }
+      return 'wss://hp028-railtwin.duckdns.org/ws';
+    }
+    const WS_URL = defaultWsUrl();
     document.getElementById('ws-url-label').textContent = WS_URL;
     const RECONNECT_MS = 4000;
     const PRED_MAX = 40;
@@ -189,18 +235,29 @@
           return;
         }
 
-        const x = data.distance_x ?? data.DIST;
-        setText('val-pred', data.PRED_RAIL_DEFORM);
-        setBar('bar-pred', data.PRED_RAIL_DEFORM, PRED_MAX);
-        setText('val-crest', data.CREST);
-        setBar('bar-crest', data.CREST, CREST_MAX);
+        const left = data.left && typeof data.left === 'object' ? data.left : data;
+        const right = data.right && typeof data.right === 'object' ? data.right : data;
+        const x = left.distance_x ?? left.DIST ?? right.distance_x ?? right.DIST;
+
+        setText('val-pred-left', left.PRED_RAIL_DEFORM);
+        setBar('bar-pred-left', left.PRED_RAIL_DEFORM, PRED_MAX);
+        setText('val-pred-right', right.PRED_RAIL_DEFORM);
+        setBar('bar-pred-right', right.PRED_RAIL_DEFORM, PRED_MAX);
+        setText('val-crest-left', left.CREST);
+        setBar('bar-crest-left', left.CREST, CREST_MAX);
+        setText('val-crest-right', right.CREST);
+        setBar('bar-crest-right', right.CREST, CREST_MAX);
         setText('val-x', x, 0);
         setBar('bar-x', x, X_MAX);
 
-        setText('val-aax', data.AAX);
-        setText('val-aay', data.AAY);
-        setText('val-aaz', data.AAZ);
-        setText('val-dist', data.DIST);
+        setText('val-aax-left', left.AAX);
+        setText('val-aay-left', left.AAY);
+        setText('val-aaz-left', left.AAZ);
+        setText('val-dist-left', left.DIST);
+        setText('val-aax-right', right.AAX);
+        setText('val-aay-right', right.AAY);
+        setText('val-aaz-right', right.AAZ);
+        setText('val-dist-right', right.DIST);
 
         msgCount++;
         lastUpdated.textContent = `마지막 수신: ${new Date().toLocaleTimeString('ko-KR')}`;
