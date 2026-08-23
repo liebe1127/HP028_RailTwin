@@ -151,11 +151,11 @@
       <div class="flex items-center justify-between mb-3">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage1)">단계 1</div>
-          <h2 class="text-lg font-semibold">더미 스트리머</h2>
+          <h2 class="text-lg font-semibold">센서 입력</h2>
         </div>
         <span id="zone-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
       </div>
-      <p class="text-xs text-slate-400 mb-4">1m 왕복 · 40~50cm 단차 충격 모사 · 원시 센서값</p>
+      <p class="text-xs text-slate-400 mb-4">ESP32-C3 WiFi WebSocket · MPU6050 · LR18-08U</p>
 
       <div class="mb-3">
         <div class="flex justify-between text-[11px] text-slate-500 mb-1">
@@ -170,28 +170,38 @@
 
       <div class="grid grid-cols-3 gap-2 text-center">
         <div class="rounded-lg bg-slate-900/60 p-2">
-          <div class="text-[10px] text-slate-500">AAX L</div>
-          <div id="val-aax-l" class="mono text-sm">—</div>
+          <div class="text-[10px] text-slate-500">MPU AX L</div>
+          <div id="val-accel-x-l" class="mono text-sm">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
-          <div class="text-[10px] text-slate-500">AAY L</div>
-          <div id="val-aay-l" class="mono text-sm">—</div>
+          <div class="text-[10px] text-slate-500">MPU AY L</div>
+          <div id="val-accel-y-l" class="mono text-sm">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
-          <div class="text-[10px] text-slate-500">AAZ L</div>
-          <div id="val-aaz-l" class="mono text-sm">—</div>
+          <div class="text-[10px] text-slate-500">MPU AZ L</div>
+          <div id="val-accel-z-l" class="mono text-sm">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
-          <div class="text-[10px] text-slate-500">AAX R</div>
-          <div id="val-aax-r" class="mono text-sm">—</div>
+          <div class="text-[10px] text-slate-500">MPU AX R</div>
+          <div id="val-accel-x-r" class="mono text-sm">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
-          <div class="text-[10px] text-slate-500">AAY R</div>
-          <div id="val-aay-r" class="mono text-sm">—</div>
+          <div class="text-[10px] text-slate-500">MPU AY R</div>
+          <div id="val-accel-y-r" class="mono text-sm">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
-          <div class="text-[10px] text-slate-500">AAZ R</div>
-          <div id="val-aaz-r" class="mono text-sm">—</div>
+          <div class="text-[10px] text-slate-500">MPU AZ R</div>
+          <div id="val-accel-z-r" class="mono text-sm">—</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mt-2 text-center">
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">LR18 거리 L</div>
+          <div id="val-distance-l" class="mono text-sm">— mm</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">LR18 거리 R</div>
+          <div id="val-distance-r" class="mono text-sm">— mm</div>
         </div>
       </div>
     </article>
@@ -419,7 +429,9 @@
           fetch(HTTP_BASE + '/', { cache: 'no-store' }).then((r) => r.json()),
           fetch(HTTP_BASE + '/ws/clients', { cache: 'no-store' }).then((r) => r.json()),
         ]);
-        document.getElementById('meta-source').textContent = h.demo_mode ? '더미 스트리머' : '시리얼 ESP32';
+        document.getElementById('meta-source').textContent = h.demo_mode
+          ? '더미 스트리머'
+          : (h.sensor_ws_clients > 0 ? 'WiFi ESP32-C3' : '센서 연결 대기');
         document.getElementById('meta-source').style.color = h.demo_mode ? 'var(--stage1)' : '#a78bfa';
         document.getElementById('meta-ai').textContent = h.ai_model_loaded
           ? `로드됨 (${h.ai_model_device || 'cpu'})`
@@ -436,7 +448,7 @@
     function applyPayload(data) {
       const left = data.left && typeof data.left === 'object' ? data.left : data;
       const right = data.right && typeof data.right === 'object' ? data.right : null;
-      const x = left.distance_x ?? left.DIST ?? (right && (right.distance_x ?? right.DIST));
+      const x = left.distance_x ?? (right && right.distance_x);
 
       pulse('stage-1');
       pulse('stage-2');
@@ -455,13 +467,17 @@
           : 'text-xs px-2 py-1 rounded-full border border-teal-800 text-teal-300';
       }
 
-      document.getElementById('val-aax-l').textContent = fmt(left.AAX, 3);
-      document.getElementById('val-aay-l').textContent = fmt(left.AAY, 3);
-      document.getElementById('val-aaz-l').textContent = fmt(left.AAZ, 3);
+      document.getElementById('val-accel-x-l').textContent = fmt(left.accel_x, 3);
+      document.getElementById('val-accel-y-l').textContent = fmt(left.accel_y, 3);
+      document.getElementById('val-accel-z-l').textContent = fmt(left.accel_z, 3);
+      document.getElementById('val-distance-l').textContent =
+        `${fmt(left.sensor_distance_mm, 3)} mm`;
       if (right) {
-        document.getElementById('val-aax-r').textContent = fmt(right.AAX, 3);
-        document.getElementById('val-aay-r').textContent = fmt(right.AAY, 3);
-        document.getElementById('val-aaz-r').textContent = fmt(right.AAZ, 3);
+        document.getElementById('val-accel-x-r').textContent = fmt(right.accel_x, 3);
+        document.getElementById('val-accel-y-r').textContent = fmt(right.accel_y, 3);
+        document.getElementById('val-accel-z-r').textContent = fmt(right.accel_z, 3);
+        document.getElementById('val-distance-r').textContent =
+          `${fmt(right.sensor_distance_mm, 3)} mm`;
       }
 
       document.getElementById('val-crest-l').textContent = fmt(left.CREST);
@@ -480,16 +496,22 @@
 
       const preview = {
         left: {
-          distance_x: left.distance_x ?? left.DIST,
+          device_id: left.device_id,
+          distance_x: left.distance_x,
+          sensor_distance_mm: left.sensor_distance_mm,
           CREST: left.CREST,
           PRED_RAIL_DEFORM: left.PRED_RAIL_DEFORM,
+          dropped_batches: left.dropped_batches,
           rail_risk_len: Array.isArray(left.rail_risk) ? left.rail_risk.length : 0,
         },
         right: right
           ? {
-              distance_x: right.distance_x ?? right.DIST,
+              device_id: right.device_id,
+              distance_x: right.distance_x,
+              sensor_distance_mm: right.sensor_distance_mm,
               CREST: right.CREST,
               PRED_RAIL_DEFORM: right.PRED_RAIL_DEFORM,
+              dropped_batches: right.dropped_batches,
               rail_risk_len: Array.isArray(right.rail_risk) ? right.rail_risk.length : 0,
             }
           : null,

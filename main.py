@@ -436,25 +436,38 @@ def build_side_ws_payload(
     rail_risk: list[float],
 ) -> dict:
     """Godot left/right 객체 하나에 넣을 레일별 페이로드."""
+    position_mm = sample.get("position_mm")
+    distance_x = (
+        float(position_mm) / 10.0
+        if isinstance(position_mm, (int, float))
+        else None
+    )
     return {
         "ts": sample.get("_received_at"),
-        "distance_x": sample.get("DIST"),
-        "AAX": sample.get("AAX"),
-        "AAY": sample.get("AAY"),
-        "AAZ": sample.get("AAZ"),
-        "DIST": sample.get("DIST"),
-        "MAX": sample.get("MAX"),
-        "MAY": sample.get("MAY"),
-        "MAZ": sample.get("MAZ"),
-        "GX": sample.get("GX"),
-        "GY": sample.get("GY"),
-        "GZ": sample.get("GZ"),
+        "distance_x": distance_x,
+        "position_mm": position_mm,
+        "sensor_distance_mm": sample.get("sensor_distance_mm"),
+        "adc_raw": sample.get("adc_raw"),
+        "adc_voltage_v": sample.get("adc_voltage_v"),
+        "sensor_voltage_v": sample.get("sensor_voltage_v"),
+        "accel_x": sample.get("accel_x"),
+        "accel_y": sample.get("accel_y"),
+        "accel_z": sample.get("accel_z"),
+        "gyro_x": sample.get("gyro_x"),
+        "gyro_y": sample.get("gyro_y"),
+        "gyro_z": sample.get("gyro_z"),
         "CREST": crest,
         "PRED_RAIL_DEFORM": pred_rail_deform,
         "rail_risk": rail_risk,
         "rail_length_cm": RAIL_LENGTH_CM,
         "segment_count": RAIL_SEGMENT_COUNT,
-        "device_id": f"{DEVICE_ID}-{side}",
+        "device_id": sample.get("device_id") or f"{DEVICE_ID}-{side}",
+        "rail_side": side,
+        "sample_seq": sample.get("sample_seq"),
+        "batch_seq": sample.get("batch_seq"),
+        "dropped_batches": sample.get("dropped_batches"),
+        "firmware_version": sample.get("firmware_version"),
+        "features": sample.get("_engineered_features"),
     }
 
 
