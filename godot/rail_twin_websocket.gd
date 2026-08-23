@@ -2,7 +2,8 @@ extends Node3D
 ## 하부 레일 변형 예측 디지털 트윈 — FastAPI WebSocket 연동 (Godot 4.7)
 ##
 ## 서버 페이로드:
-##   { "left": { distance_x, CREST, PRED_RAIL_DEFORM, rail_risk[], ... },
+##   { "left": { distance_x, position_mm, sensor_distance_mm,
+##               CREST, PRED_RAIL_DEFORM, rail_risk[], ... },
 ##     "right": { ... },
 ##     "source": "demo" }
 ## 구 평면 페이로드(left/right 없음)도 호환 — 양쪽 레일에 같은 값을 적용.
@@ -57,6 +58,7 @@ var target_distance_m: float = 0.0
 var current_distance_m: float = 0.0
 var target_crest: float = 0.0
 var target_rail_deform: float = 0.0
+var target_sensor_distance_mm: float = 0.0
 
 var crane_node: Node3D
 var left_rail_mesh: MeshInstance3D
@@ -310,6 +312,9 @@ func _apply_shared_fields(data: Dictionary) -> void:
 
 	if data.has("PRED_RAIL_DEFORM") and data["PRED_RAIL_DEFORM"] != null:
 		target_rail_deform = float(data["PRED_RAIL_DEFORM"])
+
+	if data.has("sensor_distance_mm") and data["sensor_distance_mm"] != null:
+		target_sensor_distance_mm = float(data["sensor_distance_mm"])
 
 	if data.has("rail_length_cm") and data["rail_length_cm"] != null:
 		var new_len: float = float(data["rail_length_cm"]) / 100.0

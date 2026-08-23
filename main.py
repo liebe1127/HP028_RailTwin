@@ -4,9 +4,10 @@ main.py
 주행 진동·가속도 수집 → 특징 공학 → RBF로 하부 레일 변형(단차·침하·뒤틀림) 지표 추론
 
 아키텍처:
-  [ESP32-S3] --serial--> [Producer Task] --asyncio.Queue--> [Consumer Task] --> [InfluxDB]
-       or                                                                  --> [RBF 레일 변형 추론]
-  [더미 스트리머]                                                            --> [left/right rail_risk] --> [WebSocket /ws]
+  [ESP32-C3] --WiFi WebSocket /ws/sensor--> [asyncio.Queue] --> [Consumer Task] --> [InfluxDB]
+  [더미 스트리머] --------------------------------------------->            --> [RBF 레일 변형 추론]
+                                                                                --> [left/right rail_risk]
+                                                                                --> [WebSocket /ws]
 
 실행:
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -16,8 +17,8 @@ WebSocket 테스트:
   # 또는 브라우저 콘솔: new WebSocket("ws://localhost:8000/ws")
 
 환경 변수 (.env 파일 또는 shell export):
-  SERIAL_PORT      /dev/cu.usbmodem1101
-  BAUD_RATE        115200
+  SENSOR_AUTH_TOKEN sensor-uplink-bearer-token
+  DEMO_MODE         true|false
   INFLUX_URL       http://localhost:8086
   INFLUX_TOKEN     your-influxdb-token
   INFLUX_ORG       your-org
@@ -29,6 +30,7 @@ WebSocket 테스트:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -36,42 +38,48 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
-import serial
 import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
-from influxdb_client import Point
+from influxdb_client import Point, WritePrecision
 
 from ml.train_rbf_surrogate import (
     FEATURE_NAMES,
     WINDOW_LEN,
     RBFSurrogateModel,
-    accel_dynamic_magnitude,
-    compute_crest_from_window,
+    dynamic_accel_magnitude,
+    extract_engineered_features,
+    gyro_magnitude,
 )
+from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_batch
 
 # ─────────────────────────────────────────────
 #  환경 변수 로드 (.env 파일 우선, 없으면 shell 환경변수 사용)
 # ─────────────────────────────────────────────
 load_dotenv()
 
-SERIAL_PORT: str = os.getenv("SERIAL_PORT", "/dev/cu.usbmodem1101")
-BAUD_RATE: int = int(os.getenv("BAUD_RATE", "115200"))
-READ_TIMEOUT: float = 2.0
-RECONNECT_DELAY: float = 3.0
+SENSOR_AUTH_TOKEN: str = os.getenv("SENSOR_AUTH_TOKEN", "")
+SENSOR_WS_MAX_MESSAGE_BYTES: int = int(
+    os.getenv("SENSOR_WS_MAX_MESSAGE_BYTES", "65536")
+)
+DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 INFLUX_URL: str = os.getenv("INFLUX_URL", "http://localhost:8086")
 INFLUX_TOKEN: str = os.getenv("INFLUX_TOKEN", "")
 INFLUX_ORG: str = os.getenv("INFLUX_ORG", "")
 INFLUX_BUCKET: str = os.getenv("INFLUX_BUCKET", "crane_data")
-DEVICE_ID: str = os.getenv("DEVICE_ID", "esp32-s3")
-# 시리얼 ESP32가 한쪽만 있을 때 매핑할 레일 (다른 쪽은 시연 더미)
-SERIAL_RAIL_SIDE: str = os.getenv("SERIAL_RAIL_SIDE", "left").strip().lower()
-RAIL_SIDES: tuple[str, ...] = ("left", "right")
+INFLUX_WRITE_ENABLED: bool = bool(INFLUX_TOKEN and INFLUX_ORG)
+DEVICE_ID: str = os.getenv("DEVICE_ID", "rail-sensor")
 
 MEASUREMENT = "crane_sensor"
 QUEUE_MAX_SIZE = 100  # 큐 최대 적재 수 (초과 시 가장 오래된 항목 드롭)
@@ -164,65 +172,25 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
+sensor_ws_clients = 0
+sensor_last_batch_seq: dict[tuple[str, str], int] = {}
 
 
-# ─────────────────────────────────────────────
-#  유틸리티: 시리얼 포트 열기
-# ─────────────────────────────────────────────
-def open_serial(port: str, baud: int, timeout: float) -> serial.Serial:
-    return serial.Serial(
-        port=port,
-        baudrate=baud,
-        bytesize=serial.EIGHTBITS,
-        parity=serial.PARITY_NONE,
-        stopbits=serial.STOPBITS_ONE,
-        timeout=timeout,
+def sensor_authorized(ws: WebSocket) -> bool:
+    """필수 Authorization Bearer 센서 토큰을 상수 시간 비교로 검증한다."""
+    if not SENSOR_AUTH_TOKEN:
+        return False
+    authorization = ws.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    return scheme.lower() == "bearer" and hmac.compare_digest(
+        token.strip(), SENSOR_AUTH_TOKEN
     )
-
-
-# ─────────────────────────────────────────────
-#  유틸리티: 센서 라인 파싱
-#  입력 예시:
-#    "AAX:0.12,AAY:-0.05,AAZ:9.81,DIST:23.45,MAX:0.01,MAY:-0.02,MAZ:9.80,GX:0.5,GY:1.2,GZ:-0.3"
-#  반환: {"AAX": 0.12, ..., "DIST": 23.45, "MAX": 0.01, ..., "GZ": -0.3}
-#        ERR 이거나 숫자 변환 실패 시 해당 키의 값은 None
-#
-#  AA* : ADXL345 가속도 (m/s²) | DIST : HC-SR04 거리 (cm)
-#  MA* : MPU-6050 가속도 (m/s²) | G*  : MPU-6050 자이로 (rad/s)
-# ─────────────────────────────────────────────
-EXPECTED_KEYS = {"AAX", "AAY", "AAZ", "DIST", "MAX", "MAY", "MAZ", "GX", "GY", "GZ"}
-
-
-def parse_sensor_line(raw_line: str) -> dict | None:
-    if not raw_line:
-        return None
-
-    fields: dict = {}
-    for token in raw_line.split(","):
-        key, sep, value = token.partition(":")
-        key = key.strip()
-        value = value.strip()
-
-        if not sep or key not in EXPECTED_KEYS:
-            continue  # 콜론 누락 또는 알 수 없는 키는 건너뜀
-
-        if value == "ERR" or value == "":
-            fields[key] = None
-            continue
-
-        try:
-            fields[key] = float(value)
-        except ValueError:
-            fields[key] = None  # 필드 단위로만 무효 처리, 라인 전체는 버리지 않음
-
-    return fields if fields else None
 
 
 # ─────────────────────────────────────────────
 #  AI 추론: PyTorch RBF 레일 변형 대리 모델
 #  모델 정의는 ml/train_rbf_surrogate.py (centers=64, output_dim=1).
-#  입력 11차원 = 센서 10개 + CREST. 출력은 하부 레일 변형 스칼라.
-#  (거더 처짐 계수·PRED_DEFLECTION 을 쓰지 않음)
+#  입력은 MPU6050·LR18·엔코더 롤링 윈도우의 특징 공학 결과다.
 # ─────────────────────────────────────────────
 ml_state: dict = {
     "model": None,
@@ -233,9 +201,15 @@ ml_state: dict = {
     "y_std": None,
 }
 
-# 좌/우 레일 각각 웨이블릿·파고율용 가속도 롤링 윈도우
-accel_windows: dict[str, deque[float]] = {
-    side: deque(maxlen=WINDOW_LEN) for side in RAIL_SIDES
+# 좌/우 레일별 특징 공학 롤링 윈도우
+feature_windows: dict[str, dict[str, deque]] = {
+    side: {
+        "accel": deque(maxlen=WINDOW_LEN),
+        "gyro": deque(maxlen=WINDOW_LEN),
+        "distance": deque(maxlen=WINDOW_LEN),
+        "position_time": deque(maxlen=2),
+    }
+    for side in RAIL_SIDES
 }
 
 
@@ -256,6 +230,14 @@ def load_rbf_model(path: str) -> None:
     try:
         device = get_inference_device()
         checkpoint = torch.load(path, map_location=device, weights_only=False)
+        if checkpoint.get("model_contract_version") != 2:
+            raise ValueError("현재 센서용 model_contract_version=2 모델이 아닙니다.")
+        checkpoint_features = checkpoint.get("feature_names")
+        if checkpoint_features != FEATURE_NAMES:
+            raise ValueError(
+                "모델 feature_names가 현재 센서 계약과 다릅니다. "
+                "ml/train_rbf_surrogate.py로 다시 학습하세요."
+            )
 
         model = RBFSurrogateModel(
             input_dim=checkpoint["input_dim"],
@@ -281,59 +263,66 @@ def load_rbf_model(path: str) -> None:
         ml_state["model"] = None
 
 
-def extract_crest_feature(data: dict, side: str = "left") -> float:
-    """
-    가속도 창에 sym3 웨이블릿 디노이징을 적용한 뒤 파고율(Peak/RMS)을 계산한다.
-
-    창 우선순위:
-      1) accel_array 가 있으면 그 배열 (엣지가 윈도우를 보낼 때)
-      2) 아니면 ADXL+MPU 동적 진폭을 해당 레일 롤링 윈도우(WINDOW_LEN)에 적재
-    시연 더미의 `_demo_crest_target` 이 있으면 그 값을 반환한다
-    (40~50cm 단차 충격에서 CREST≥5.0 재현).
-    """
-    window = accel_windows.setdefault(side, deque(maxlen=WINDOW_LEN))
-    mag = accel_dynamic_magnitude(
-        float(data.get("AAX") or 0.0),
-        float(data.get("AAY") or 0.0),
-        float(data.get("AAZ") or 9.8),
-        float(data.get("MAX") or 0.0),
-        float(data.get("MAY") or 0.0),
-        float(data.get("MAZ") or 9.8),
-    )
-    window.append(mag)
-
-    raw_window = data.get("accel_array")
-    if raw_window is not None:
-        window_arr = np.asarray(raw_window, dtype=np.float64).ravel()
-    else:
-        window_arr = np.asarray(window, dtype=np.float64)
-
-    crest = compute_crest_from_window(window_arr) if window_arr.size else 0.0
-
-    demo_target = data.get("_demo_crest_target")
-    if demo_target is not None:
-        return float(demo_target)
-    return crest
-
-
 def preprocess_and_extract_features(
     data: dict, side: str = "left"
 ) -> tuple[list[float | None], float]:
     """
-    원시 센서를 모델에 직입력하지 않는다.
-    FEATURE_NAMES 순서의 11차원 벡터를 만들고, CREST만 웨이블릿 특징이다.
-
-      [AAX, AAY, AAZ, DIST, MAX, MAY, MAZ, GX, GY, GZ, CREST]
+    MPU6050·LR18·엔코더 원시값을 롤링 창에 적재하고,
+    웨이블릿·RMS·peak-to-peak·파고율·거리 변화·속도 특징을 만든다.
     """
-    crest = extract_crest_feature(data, side)
-    values: list[float | None] = []
-    for key in FEATURE_NAMES:
-        if key == "CREST":
-            values.append(float(crest))
-            continue
-        val = data.get(key)
-        values.append(None if val is None else float(val))
-    return values, float(crest)
+    windows = feature_windows.setdefault(
+        side,
+        {
+            "accel": deque(maxlen=WINDOW_LEN),
+            "gyro": deque(maxlen=WINDOW_LEN),
+            "distance": deque(maxlen=WINDOW_LEN),
+            "position_time": deque(maxlen=2),
+        },
+    )
+
+    accel_values = [data.get(key) for key in ("accel_x", "accel_y", "accel_z")]
+    if all(isinstance(value, (int, float)) for value in accel_values):
+        windows["accel"].append(
+            dynamic_accel_magnitude(*(float(value) for value in accel_values))
+        )
+
+    gyro_values = [data.get(key) for key in ("gyro_x", "gyro_y", "gyro_z")]
+    if all(isinstance(value, (int, float)) for value in gyro_values):
+        windows["gyro"].append(
+            gyro_magnitude(*(float(value) for value in gyro_values))
+        )
+
+    sensor_distance = data.get("sensor_distance_mm")
+    if isinstance(sensor_distance, (int, float)):
+        windows["distance"].append(float(sensor_distance))
+
+    position = data.get("position_mm")
+    received_at = data.get("_received_at")
+    if isinstance(position, (int, float)) and isinstance(
+        received_at, (int, float)
+    ):
+        windows["position_time"].append((float(position), float(received_at)))
+
+    speed_mm_s = 0.0
+    if len(windows["position_time"]) == 2:
+        previous, current = windows["position_time"]
+        elapsed = current[1] - previous[1]
+        if elapsed > 0.0:
+            speed_mm_s = abs(current[0] - previous[0]) / elapsed
+
+    features = extract_engineered_features(
+        np.asarray(windows["accel"], dtype=np.float64),
+        np.asarray(windows["gyro"], dtype=np.float64),
+        np.asarray(windows["distance"], dtype=np.float64),
+        speed_mm_s,
+    )
+    crest_index = FEATURE_NAMES.index("crest_factor")
+    demo_target = data.get("_demo_crest_target")
+    if demo_target is not None:
+        features[crest_index] = float(demo_target)
+    crest = features[crest_index]
+    data["_engineered_features"] = dict(zip(FEATURE_NAMES, features))
+    return features, float(crest or 0.0)
 
 
 def normalize_risk(pred_rail_deform: float | None, crest: float | None) -> float:
@@ -385,7 +374,7 @@ def predict_rail_deform(
     data: dict, side: str = "left"
 ) -> tuple[float | None, float | None]:
     """
-    특징 공학(11차원) → RBF → 하부 주행 레일 변형 지표(스칼라).
+    특징 공학 → RBF → 하부 주행 레일 변형 지표(스칼라).
 
     Returns:
         (pred_rail_deform, crest) — 실패 시 해당 값은 None
@@ -428,7 +417,7 @@ def predict_rail_deform(
 
 def split_rail_samples(data: dict) -> tuple[str, dict[str, dict]]:
     """큐 항목에서 좌/우 레일 샘플과 source 를 꺼낸다. 구 평면 페이로드는 양쪽에 복제."""
-    source = str(data.get("source") or data.get("_source") or "serial")
+    source = str(data.get("source") or data.get("_source") or "websocket")
     samples: dict[str, dict] = {}
     for side in RAIL_SIDES:
         sample = data.get(side)
@@ -448,25 +437,38 @@ def build_side_ws_payload(
     rail_risk: list[float],
 ) -> dict:
     """Godot left/right 객체 하나에 넣을 레일별 페이로드."""
+    position_mm = sample.get("position_mm")
+    distance_x = (
+        float(position_mm) / 10.0
+        if isinstance(position_mm, (int, float))
+        else None
+    )
     return {
         "ts": sample.get("_received_at"),
-        "distance_x": sample.get("DIST"),
-        "AAX": sample.get("AAX"),
-        "AAY": sample.get("AAY"),
-        "AAZ": sample.get("AAZ"),
-        "DIST": sample.get("DIST"),
-        "MAX": sample.get("MAX"),
-        "MAY": sample.get("MAY"),
-        "MAZ": sample.get("MAZ"),
-        "GX": sample.get("GX"),
-        "GY": sample.get("GY"),
-        "GZ": sample.get("GZ"),
+        "distance_x": distance_x,
+        "position_mm": position_mm,
+        "sensor_distance_mm": sample.get("sensor_distance_mm"),
+        "adc_raw": sample.get("adc_raw"),
+        "adc_voltage_v": sample.get("adc_voltage_v"),
+        "sensor_voltage_v": sample.get("sensor_voltage_v"),
+        "accel_x": sample.get("accel_x"),
+        "accel_y": sample.get("accel_y"),
+        "accel_z": sample.get("accel_z"),
+        "gyro_x": sample.get("gyro_x"),
+        "gyro_y": sample.get("gyro_y"),
+        "gyro_z": sample.get("gyro_z"),
         "CREST": crest,
         "PRED_RAIL_DEFORM": pred_rail_deform,
         "rail_risk": rail_risk,
         "rail_length_cm": RAIL_LENGTH_CM,
         "segment_count": RAIL_SEGMENT_COUNT,
-        "device_id": f"{DEVICE_ID}-{side}",
+        "device_id": sample.get("device_id") or f"{DEVICE_ID}-{side}",
+        "rail_side": side,
+        "sample_seq": sample.get("sample_seq"),
+        "batch_seq": sample.get("batch_seq"),
+        "dropped_batches": sample.get("dropped_batches"),
+        "firmware_version": sample.get("firmware_version"),
+        "features": sample.get("_engineered_features"),
     }
 
 
@@ -478,19 +480,6 @@ async def enqueue_sensor_item(item: dict) -> None:
         except asyncio.QueueEmpty:
             pass
     await sensor_queue.put(item)
-
-
-# ─────────────────────────────────────────────
-#  시리얼 포트 사용 가능 여부 확인
-# ─────────────────────────────────────────────
-def serial_port_available(port: str) -> bool:
-    """실제 ESP32가 연결되어 포트를 열 수 있으면 True."""
-    try:
-        ser = open_serial(port, BAUD_RATE, READ_TIMEOUT)
-        ser.close()
-        return True
-    except Exception:
-        return False
 
 
 # ─────────────────────────────────────────────
@@ -513,45 +502,55 @@ def generate_crane_demo_sample(distance_x: float) -> dict:
         roll_deg = float(np.random.uniform(-10.0, 10.0) * max(impact, 0.4))
         pitch_deg = float(np.random.uniform(-10.0, 10.0) * max(impact, 0.4))
 
-        aax = float(np.sin(np.radians(roll_deg)) * G_MS2 + np.random.normal(0.0, 0.05))
-        aay = float(np.sin(np.radians(pitch_deg)) * G_MS2 + np.random.normal(0.0, 0.05))
-        aaz = float(9.8 + peak_g * G_MS2 + np.random.normal(0.0, 0.1))
-
-        max_ = aax + float(np.random.normal(0.0, 0.08))
-        may = aay + float(np.random.normal(0.0, 0.08))
-        maz = aaz + float(np.random.normal(0.0, 0.08))
+        accel_x = float(
+            np.sin(np.radians(roll_deg)) * G_MS2
+            + np.random.normal(0.0, 0.05)
+        )
+        accel_y = float(
+            np.sin(np.radians(pitch_deg)) * G_MS2
+            + np.random.normal(0.0, 0.05)
+        )
+        accel_z = float(
+            9.8 + peak_g * G_MS2 + np.random.normal(0.0, 0.1)
+        )
 
         gx = float(np.radians(roll_deg) + np.random.normal(0.0, 0.02))
         gy = float(np.radians(pitch_deg) + np.random.normal(0.0, 0.02))
         gz = float(np.random.normal(0.0, 0.05))
+        sensor_distance_mm = float(
+            4.0 + 0.8 * impact + np.random.normal(0.0, 0.02)
+        )
 
         # 위험 임계치 5.0 이상으로 치솟도록 시연용 파고율 지정
         demo_crest = float(5.0 + 3.0 * impact + np.random.uniform(0.0, 1.0))
     else:
         # 정상 주행: 거의 0에 가까운 미세 가우시안 노이즈
-        aax = float(np.random.normal(0.0, 0.005))
-        aay = float(np.random.normal(0.0, 0.005))
-        aaz = float(9.8 + np.random.normal(0.0, 0.005))
-        max_ = float(np.random.normal(0.0, 0.005))
-        may = float(np.random.normal(0.0, 0.005))
-        maz = float(9.8 + np.random.normal(0.0, 0.005))
+        accel_x = float(np.random.normal(0.0, 0.005))
+        accel_y = float(np.random.normal(0.0, 0.005))
+        accel_z = float(9.8 + np.random.normal(0.0, 0.005))
         gx = float(np.random.normal(0.0, 0.005))
         gy = float(np.random.normal(0.0, 0.005))
         gz = float(np.random.normal(0.0, 0.005))
+        sensor_distance_mm = float(4.0 + np.random.normal(0.0, 0.01))
         # 정상 범위 파고율 1.0~1.5
         demo_crest = float(np.random.uniform(1.05, 1.45))
 
+    sensor_voltage_v = float(
+        np.clip((sensor_distance_mm - 1.0) / 7.0 * 10.0, 0.0, 10.0)
+    )
+    adc_voltage_v = sensor_voltage_v * (68_000.0 / 538_000.0)
     return {
-        "AAX": aax,
-        "AAY": aay,
-        "AAZ": aaz,
-        "DIST": float(distance_x),
-        "MAX": max_,
-        "MAY": may,
-        "MAZ": maz,
-        "GX": gx,
-        "GY": gy,
-        "GZ": gz,
+        "position_mm": float(distance_x) * 10.0,
+        "sensor_distance_mm": sensor_distance_mm,
+        "adc_raw": int(np.clip(adc_voltage_v / 4.096 * 32768.0, 0, 32767)),
+        "adc_voltage_v": adc_voltage_v,
+        "sensor_voltage_v": sensor_voltage_v,
+        "accel_x": accel_x,
+        "accel_y": accel_y,
+        "accel_z": accel_z,
+        "gyro_x": gx,
+        "gyro_y": gy,
+        "gyro_z": gz,
         "_demo_crest_target": demo_crest,
         "_source": "demo",
     }
@@ -574,13 +573,25 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     )
 
     distance_x = 0.0
+    sample_seq = 1
 
     while not stop_event.is_set():
         ts = time.time()
         left = generate_crane_demo_sample(distance_x)
         right = generate_crane_demo_sample(distance_x)
-        left["_received_at"] = ts
-        right["_received_at"] = ts
+        for side, sample in (("left", left), ("right", right)):
+            sample.update(
+                {
+                    "_received_at": ts,
+                    "sample_seq": sample_seq,
+                    "uptime_us": int(ts * 1_000_000),
+                    "device_id": f"demo-{side}",
+                    "rail_side": side,
+                    "batch_seq": sample_seq,
+                    "dropped_batches": 0,
+                    "firmware_version": "demo",
+                }
+            )
 
         await enqueue_sensor_item({"left": left, "right": right, "source": "demo"})
 
@@ -596,82 +607,80 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
         distance_x += 1.0
         if distance_x > DEMO_RAIL_LENGTH_CM:
             distance_x = 0.0
+        sample_seq += 1
 
         await asyncio.sleep(DEMO_HZ_INTERVAL)
 
     logger.info("더미 스트리머 종료")
 
 
-# ─────────────────────────────────────────────
-#  Producer Task: 시리얼 읽기 → 큐에 적재
-#  readline()은 블로킹 I/O이므로 asyncio.to_thread로 감쌈
-# ─────────────────────────────────────────────
-async def serial_producer(stop_event: asyncio.Event) -> None:
-    logger.info("Producer 시작: 포트=%s, 보드레이트=%d", SERIAL_PORT, BAUD_RATE)
-    ser: serial.Serial | None = None
+def build_influx_point(
+    sample: dict,
+    *,
+    side: str,
+    source: str,
+    pred_rail_deform: float | None,
+    crest: float | None,
+) -> Point:
+    """현재 센서 계약과 특징 공학 결과를 InfluxDB Point로 변환한다."""
+    device_id = str(sample.get("device_id") or f"{DEVICE_ID}-{side}")
+    point = (
+        Point(MEASUREMENT)
+        .tag("device_id", device_id)
+        .tag("rail_side", side)
+        .tag("source", source)
+    )
+    firmware_version = sample.get("firmware_version")
+    if firmware_version:
+        point = point.tag("firmware_version", str(firmware_version))
 
-    while not stop_event.is_set():
-        # ── 포트 열기 (실패 시 재시도) ──
-        if ser is None or not ser.is_open:
-            try:
-                ser = await asyncio.to_thread(open_serial, SERIAL_PORT, BAUD_RATE, READ_TIMEOUT)
-                logger.info("시리얼 포트 연결 성공: %s", SERIAL_PORT)
-            except serial.SerialException as exc:
-                logger.error("포트 열기 실패: %s — %s초 후 재시도", exc, RECONNECT_DELAY)
-                await asyncio.sleep(RECONNECT_DELAY)
-                continue
+    float_fields = {
+        "position_mm": "position_mm",
+        "sensor_distance_mm": "sensor_distance_mm",
+        "adc_voltage_v": "adc_voltage_v",
+        "sensor_voltage_v": "sensor_voltage_v",
+        "accel_x": "mpu_accel_x",
+        "accel_y": "mpu_accel_y",
+        "accel_z": "mpu_accel_z",
+        "gyro_x": "mpu_gyro_x",
+        "gyro_y": "mpu_gyro_y",
+        "gyro_z": "mpu_gyro_z",
+    }
+    integer_fields = {
+        "adc_raw": "adc_raw",
+        "sample_seq": "sample_seq",
+        "uptime_us": "uptime_us",
+        "batch_seq": "batch_seq",
+        "dropped_batches": "dropped_batches",
+    }
+    for sensor_key, influx_field in float_fields.items():
+        value = sample.get(sensor_key)
+        if isinstance(value, (int, float)):
+            point = point.field(influx_field, float(value))
+    for sensor_key, influx_field in integer_fields.items():
+        value = sample.get(sensor_key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            point = point.field(influx_field, value)
 
-        # ── 1줄 읽기 (블로킹 → to_thread로 이벤트 루프 비블로킹) ──
-        try:
-            raw_bytes: bytes = await asyncio.to_thread(ser.readline)
-        except serial.SerialException as exc:
-            logger.warning("시리얼 통신 오류: %s — 재연결 시도", exc)
-            try:
-                ser.close()
-            except Exception:
-                pass
-            ser = None
-            await asyncio.sleep(RECONNECT_DELAY)
-            continue
+    engineered = sample.get("_engineered_features")
+    if isinstance(engineered, dict):
+        for feature_name in FEATURE_NAMES:
+            value = engineered.get(feature_name)
+            if isinstance(value, (int, float)):
+                point = point.field(f"feature_{feature_name}", float(value))
 
-        if not raw_bytes:
-            logger.debug("수신 타임아웃 (ESP32 응답 없음)")
-            continue
+    if pred_rail_deform is not None:
+        point = point.field("pred_rail_deform", float(pred_rail_deform))
+    if crest is not None:
+        point = point.field("crest_factor", float(crest))
 
-        try:
-            raw_line = raw_bytes.decode("utf-8", errors="replace").strip()
-        except Exception:
-            continue
-
-        if not raw_line:
-            continue
-
-        parsed = parse_sensor_line(raw_line)
-        if parsed is None:
-            logger.debug("파싱 실패 (건너뜀): %s", raw_line)
-            continue
-
-        parsed["_received_at"] = time.time()
-        logger.info("수신 → %s", raw_line)
-
-        dist = parsed.get("DIST")
-        other_side = "right" if SERIAL_RAIL_SIDE == "left" else "left"
-        other_sample = generate_crane_demo_sample(float(dist) if dist is not None else 0.0)
-        other_sample["_received_at"] = parsed["_received_at"]
-
-        item = {"source": "serial"}
-        if SERIAL_RAIL_SIDE in RAIL_SIDES:
-            item[SERIAL_RAIL_SIDE] = parsed
-            item[other_side] = other_sample
-        else:
-            item["left"] = parsed
-            item["right"] = other_sample
-        await enqueue_sensor_item(item)
-
-    # ── 종료 처리 ──
-    if ser and ser.is_open:
-        ser.close()
-        logger.info("시리얼 포트 정상 종료")
+    received_at = sample.get("_received_at")
+    if isinstance(received_at, (int, float)) and received_at > 0:
+        point = point.time(
+            int(float(received_at) * 1_000_000_000),
+            WritePrecision.NS,
+        )
+    return point
 
 
 # ─────────────────────────────────────────────
@@ -682,6 +691,10 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
         "Consumer 시작: InfluxDB=%s  bucket=%s  org=%s",
         INFLUX_URL, INFLUX_BUCKET, INFLUX_ORG,
     )
+    if not INFLUX_WRITE_ENABLED:
+        logger.warning(
+            "INFLUX_TOKEN 또는 INFLUX_ORG가 없어 DB 쓰기를 비활성화합니다."
+        )
 
     async with InfluxDBClientAsync(
         url=INFLUX_URL,
@@ -700,37 +713,32 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
             ws_payload: dict = {"source": source}
 
             for side, sample in samples.items():
-                point = (
-                    Point(MEASUREMENT)
-                    .tag("device_id", f"{DEVICE_ID}-{side}")
-                    .tag("rail_side", side)
+                pred_rail_deform, crest = predict_rail_deform(sample, side)
+                point = build_influx_point(
+                    sample,
+                    side=side,
+                    source=source,
+                    pred_rail_deform=pred_rail_deform,
+                    crest=crest,
                 )
 
-                field_map = {
-                    "AAX": "adxl_accel_x", "AAY": "adxl_accel_y", "AAZ": "adxl_accel_z",
-                    "DIST": "distance_cm",
-                    "MAX": "mpu_accel_x", "MAY": "mpu_accel_y", "MAZ": "mpu_accel_z",
-                    "GX": "mpu_gyro_x", "GY": "mpu_gyro_y", "GZ": "mpu_gyro_z",
-                }
-                for sensor_key, influx_field in field_map.items():
-                    val = sample.get(sensor_key)
-                    if val is not None:
-                        point = point.field(influx_field, float(val))
-
-                pred_rail_deform, crest = predict_rail_deform(sample, side)
-                if pred_rail_deform is not None:
-                    point = point.field("pred_rail_deform", pred_rail_deform)
-                if crest is not None:
-                    point = point.field("crest_factor", float(crest))
-
-                try:
-                    await write_api.write(bucket=INFLUX_BUCKET, record=point)
-                    logger.debug("InfluxDB 저장 완료 (%s)", side)
-                except Exception as exc:
-                    logger.error("InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc)
+                if INFLUX_WRITE_ENABLED:
+                    try:
+                        await write_api.write(bucket=INFLUX_BUCKET, record=point)
+                        logger.debug("InfluxDB 저장 완료 (%s)", side)
+                    except Exception as exc:
+                        logger.error(
+                            "InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc
+                        )
 
                 risk = normalize_risk(pred_rail_deform, crest)
-                rail_risk = update_rail_risk(sample.get("DIST"), risk, side)
+                position_mm = sample.get("position_mm")
+                position_cm = (
+                    float(position_mm) / 10.0
+                    if isinstance(position_mm, (int, float))
+                    else None
+                )
+                rail_risk = update_rail_risk(position_cm, risk, side)
                 ws_payload[side] = build_side_ws_payload(
                     sample,
                     side=side,
@@ -755,23 +763,20 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(load_rbf_model, RBF_MODEL_PATH)
 
     stop_event = asyncio.Event()
-
-    # 시리얼 포트가 없으면 시연용 더미 스트리머로 대체
-    port_ok = await asyncio.to_thread(serial_port_available, SERIAL_PORT)
-    if port_ok:
-        producer_task = asyncio.create_task(serial_producer(stop_event), name="serial-producer")
-        logger.info("시리얼 포트 감지 → 실제 ESP32 Producer 시작 (%s)", SERIAL_PORT)
-    else:
-        producer_task = asyncio.create_task(
-            dummy_sensor_streamer(stop_event), name="dummy-streamer"
+    tasks: list[asyncio.Task] = []
+    if DEMO_MODE:
+        tasks.append(
+            asyncio.create_task(
+                dummy_sensor_streamer(stop_event), name="dummy-streamer"
+            )
         )
-        logger.warning(
-            "시리얼 포트 미연결 (%s) → 1m 플라스틱 크레인 시연용 더미 스트리머 시작",
-            SERIAL_PORT,
-        )
-
+        logger.warning("DEMO_MODE=true → 시연용 더미 스트리머 시작")
     consumer_task = asyncio.create_task(influx_consumer(stop_event), name="influx-consumer")
-    logger.info("백그라운드 태스크 시작 (data-source=%s, Consumer)", producer_task.get_name())
+    tasks.append(consumer_task)
+    logger.info(
+        "백그라운드 태스크 시작 (demo_mode=%s, ESP32=/ws/sensor)",
+        DEMO_MODE,
+    )
 
     try:
         yield  # ← 서버 가동 중
@@ -779,7 +784,7 @@ async def lifespan(app: FastAPI):
         logger.info("서버 종료 요청 — 태스크 종료 대기 중...")
         stop_event.set()
 
-        await asyncio.gather(producer_task, consumer_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("모든 백그라운드 태스크 종료 완료")
 
 
@@ -789,7 +794,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Crane Rail Deformation API",
     description="갠트리 크레인 주행 진동 계측 및 하부 레일 변형(단차·침하·뒤틀림) 예측 서버",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -805,15 +810,17 @@ async def health_check():
     """서버 상태 및 큐 적재 현황을 반환합니다."""
     return {
         "status": "ok",
-        "serial_port": SERIAL_PORT,
         "influx_url": INFLUX_URL,
         "influx_bucket": INFLUX_BUCKET,
+        "influx_write_enabled": INFLUX_WRITE_ENABLED,
         "queue_size": sensor_queue.qsize(),
         "queue_max": QUEUE_MAX_SIZE,
         "ws_clients": ws_manager.client_count,
+        "sensor_ws_clients": sensor_ws_clients,
+        "sensor_auth_configured": bool(SENSOR_AUTH_TOKEN),
         "ai_model_loaded": ml_state.get("model") is not None,
         "ai_model_device": str(ml_state.get("device")) if ml_state.get("device") else None,
-        "demo_mode": not serial_port_available(SERIAL_PORT),
+        "demo_mode": DEMO_MODE,
     }
 
 
@@ -831,7 +838,7 @@ async def dashboard():
 
 
 @app.post("/rail_risk/reset", summary="레일 구간 위험도 히트맵 초기화")
-async def rail_risk_reset(side: str | None = None):
+async def rail_risk_reset(side: Optional[str] = None):
     """
     max 누적된 rail_risk를 0으로 리셋한다.
     query: side=left|right (생략 시 양쪽)
@@ -845,8 +852,90 @@ async def rail_risk_reset(side: str | None = None):
 
 # ─────────────────────────────────────────────
 #  WebSocket 엔드포인트
-#  클라이언트: ws://localhost:8000/ws
+#  센서 업링크: wss://host/ws/sensor
+#  화면 다운링크: wss://host/ws
 # ─────────────────────────────────────────────
+@app.websocket("/ws/sensor")
+async def sensor_websocket_endpoint(ws: WebSocket):
+    global sensor_ws_clients
+
+    if not sensor_authorized(ws):
+        await ws.close(code=1008, reason="invalid sensor token")
+        return
+
+    await ws.accept()
+    sensor_ws_clients += 1
+    logger.info("센서 WebSocket 연결: 현재 센서 수=%d", sensor_ws_clients)
+    try:
+        while True:
+            raw_message = await ws.receive_text()
+            if len(raw_message.encode("utf-8")) > SENSOR_WS_MAX_MESSAGE_BYTES:
+                await ws.send_json(
+                    {"type": "error", "code": "message_too_large"}
+                )
+                await ws.close(code=1009)
+                return
+
+            try:
+                message = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await ws.send_json({"type": "error", "code": "invalid_json"})
+                continue
+
+            if isinstance(message, dict) and message.get("type") == "hello":
+                await ws.send_json(
+                    {
+                        "type": "hello_ack",
+                        "schema_version": 1,
+                        "server_time_ms": int(time.time() * 1000),
+                    }
+                )
+                continue
+
+            received_at = time.time()
+            try:
+                queue_items = normalize_sensor_batch(message, received_at)
+            except SensorContractError as exc:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "invalid_sensor_batch",
+                        "detail": str(exc),
+                    }
+                )
+                continue
+
+            batch = message
+            key = (str(batch["device_id"]), str(batch["rail_side"]))
+            batch_seq = int(batch["batch_seq"])
+            last_seq = sensor_last_batch_seq.get(key, -1)
+            if batch_seq <= last_seq:
+                await ws.send_json(
+                    {
+                        "type": "ack",
+                        "batch_seq": batch_seq,
+                        "duplicate": True,
+                    }
+                )
+                continue
+
+            for item in queue_items:
+                await sensor_queue.put(item)
+            sensor_last_batch_seq[key] = batch_seq
+            await ws.send_json(
+                {
+                    "type": "ack",
+                    "batch_seq": batch_seq,
+                    "accepted_samples": len(queue_items),
+                }
+            )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        sensor_ws_clients = max(0, sensor_ws_clients - 1)
+        logger.info("센서 WebSocket 해제: 현재 센서 수=%d", sensor_ws_clients)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws_manager.connect(ws)
