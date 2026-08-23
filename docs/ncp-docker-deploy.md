@@ -1,15 +1,17 @@
 # 네이버클라우드(NCP)에 RailTwin FastAPI를 Docker로 올리는 가이드
-# ESP32-C3는 `/ws/sensor`, Godot·웹은 `/ws`에 WSS로 접속하는 것이 목표입니다.
+# 현재 운영 서버 공인 IP: 223.130.128.198
+# ESP32-C3는 MQTT `:1883`, 웹 대시보드는 `https://223.130.128.198:8000/dashboard`, Godot는 `wss://223.130.128.198:8000/ws` 로 접속합니다.
+# 구 DuckDNS(hp028-railtwin.duckdns.org) 서버는 폐지했습니다.
 
 ## 한눈에 보기
 
 0. (처음이면) **VPC + Public Subnet** 만들기 ← 여기서 가장 많이 막힘
 1. Ubuntu 서버 만들기 + **공인 IP**
-2. 방화벽(ACG)에서 **22**, **80**, **443** 포트 열기 (HTTP 시연만 할 때는 **8000**)
-3. 서버에 Docker 설치 → 코드 받아서 `docker compose up` (HTTPS는 아래 § HTTPS)
-4. Godot Inspector의 WebSocket URL을 `wss://hp028-railtwin.duckdns.org/ws` 로 바꾸기
+2. 방화벽(ACG)에서 **22**, **8000**, **1883** 포트 열기
+3. 서버에 Docker 설치 → 코드 받아서 `docker compose up`
+4. Godot Inspector의 WebSocket URL을 `wss://223.130.128.198:8000/ws` 로 바꾸기
 
-`DEMO_MODE=true`면 가상 센서, `false`면 원격 ESP32-C3 WebSocket 입력만 사용합니다.
+`DEMO_MODE=true`면 가상 센서, `false`면 원격 ESP32-C3 MQTT 입력만 사용합니다.
 
 > **대신 생성은 불가:** 네이버클라우드 콘솔은 본인 계정·결제·인증키가 필요해서  
 > Cursor/AI가 로그인해서 서버를 만들어 줄 수는 없습니다.  
@@ -102,7 +104,8 @@
 | 프로토콜 | 접근소스 | 허용포트 | 용도 |
 |---|---|---|---|
 | TCP | `0.0.0.0/0` (시연용) 또는 내 IP/32 | `22` | SSH |
-| TCP | `0.0.0.0/0` (시연용) 또는 팀원 IP | `8000` | FastAPI + WebSocket |
+| TCP | `0.0.0.0/0` (시연용) 또는 팀원 IP | `8000` | FastAPI + 화면 WebSocket |
+| TCP | `0.0.0.0/0` (시연용) 또는 센서 네트워크 | `1883` | MQTT 센서 업링크 |
 
 4. 저장
 
@@ -184,9 +187,9 @@ scp -i 키.pem -r /Users/나/Developer/해운물류0717 root@공인IP:~/HP028_Ra
 ```bash
 cd ~/HP028_RailTwin
 cp .env.example .env
-# nano .env에서 SENSOR_AUTH_TOKEN을 긴 임의 문자열로 변경
+# nano .env에서 MQTT_LEFT_PASSWORD, MQTT_RIGHT_PASSWORD, MQTT_BACKEND_PASSWORD를 긴 임의 문자열로 변경
 # 합성 시연: DEMO_MODE=true
-# 실제 ESP32-C3: DEMO_MODE=false, 펌웨어 secrets.h에도 같은 토큰 설정
+# 실제 ESP32-C3: DEMO_MODE=false, 각 보드 secrets.h의 MQTT_PASSWORD를 해당 노드 비밀번호와 일치
 ```
 
 모델 파일 `rbf_dummy_model.pth` 는 git에 없을 수 있습니다.  
@@ -234,7 +237,7 @@ http://공인IP:8000/
 {
   "status": "ok",
   "demo_mode": true,
-  "sensor_ws_clients": 0,
+  "mqtt": {"connected": false, "auth_configured": true},
   "ai_model_loaded": true
 }
 ```
@@ -288,55 +291,33 @@ ws://127.0.0.1:8000/ws
 ## 11. 팀원에게 공유할 한 줄
 
 ```
-서버: https://hp028-railtwin.duckdns.org/
-Godot WebSocket: wss://hp028-railtwin.duckdns.org/ws
+웹 대시보드: https://223.130.128.198:8000/dashboard
+Godot WebSocket: wss://223.130.128.198:8000/ws
+ESP32 MQTT: mqtt://223.130.128.198:1883
 ```
 
 ---
 
-## 12. HTTPS / WSS (Nginx 없이 Uvicorn SSL)
+## 12. 현재 운영 주소 (DuckDNS 폐지)
 
-인증서는 Certbot standalone으로 이미 발급된 상태를 가정합니다.
-
-- fullchain: `/etc/letsencrypt/live/hp028-railtwin.duckdns.org/fullchain.pem`
-- privkey: `/etc/letsencrypt/live/hp028-railtwin.duckdns.org/privkey.pem`
-- ACG: **443** (및 갱신용 **80**) 허용
-
-### Docker (권장 — 현재 NCP 운영 방식)
-
-```bash
-cd ~/해운물류0717   # 실제 클론 경로
-docker compose down
-docker compose -f docker-compose.https.yml up -d --build
-docker compose -f docker-compose.https.yml ps
-curl -I https://hp028-railtwin.duckdns.org/
-```
-
-### 호스트에서 직접 uvicorn
-
-```bash
-sudo bash scripts/run_https.sh
-```
-
-### 팀원 접속
+이전 `hp028-railtwin.duckdns.org` 서버와 Let's Encrypt 경로는 사용하지 않습니다.
+새 NCP 서버는 도메인 없이 공인 IP만 사용합니다. 웹은 `https://223.130.128.198:8000/dashboard` 입니다.
 
 | 용도 | URL |
 |---|---|
-| 헬스/API | `https://hp028-railtwin.duckdns.org/` |
-| ESP32-C3 센서 업링크 | `wss://hp028-railtwin.duckdns.org/ws/sensor` |
-| Godot / 대시보드 WS | `wss://hp028-railtwin.duckdns.org/ws` |
+| 헬스/API | `https://223.130.128.198:8000/` |
+| 웹 대시보드 | `https://223.130.128.198:8000/dashboard` |
+| ESP32-C3 센서 업링크 | `mqtt://223.130.128.198:1883` |
+| Godot / 대시보드 WS | `wss://223.130.128.198:8000/ws` |
 
-로컬 HTTP 개발으로 되돌릴 때: `docker compose -f docker-compose.yml up -d --build`  
+`docker-compose.https.yml`과 `scripts/run_https.sh`는 새 도메인을 발급하기 전까지 쓰지 않습니다.
+
 프론트 로컬 WS: `frontend/index.html?ws=ws://127.0.0.1:8000/ws`
-
-### 인증서 갱신 참고
-
-`certbot renew` 가 standalone이면 **80** 포트가 비어 있어야 합니다. uvicorn은 **443**만 쓰므로 보통 문제 없습니다. 갱신 실패 시 컨테이너를 잠시 내리고 갱신한 뒤 다시 올리면 됩니다.
 
 ---
 
 ## 참고 (다음에 할 수 있는 것)
 
 - ACG에서 팀원 IP만 허용
-- `SENSOR_AUTH_TOKEN` 주기적 교체와 장치별 토큰 분리
+- MQTT 비밀번호 주기적 교체와 좌·우·백엔드 계정 분리
 - 트래픽·인증서 자동 갱신을 더 편하게 쓰려면 이후 Nginx 리버스 프록시로 전환

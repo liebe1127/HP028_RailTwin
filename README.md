@@ -16,27 +16,27 @@
 
 ## 사용 하드웨어 및 기술 스택
 
-* **현재 하드웨어 (Edge):** ESP32-C3 Mini, MPU-6050(6축 자이로/가속도), ADS1115(외부 ADC), GTRIC M18 아날로그 유도형 근접 센서.
+* **현재 하드웨어 (Edge):** 좌·우 레일 구동부별 ESP32-C3 Mini 1대씩, 각 노드의 MPU-6050(6축 자이로/가속도), ADS1115(외부 ADC), GTRIC M18 아날로그 유도형 근접 센서.
 * **하드웨어 이력:** ESP32-S3·ADXL345·HC-SR04 구성과 기존 펌웨어는 취소된 초기 프로토타입이며 현재 구성에 사용하지 않습니다. 자세한 구분은 [`docs/hardware-configuration-history.md`](docs/hardware-configuration-history.md)를 참조하세요.
-* **백엔드 & 스트림:** Python, FastAPI, InfluxDB, ESP32 센서 업링크 WebSocket, 웹·Godot 다운링크 WebSocket.
+* **백엔드 & 스트림:** Python, FastAPI, InfluxDB, ESP32 MQTTS 업링크, 웹·Godot 다운링크 WebSocket.
 * **AI 모델:** PyTorch, RBF(Radial Basis Function) 기반 대리 모델 (입력: 진동/가속도 특징 + 파고율 등).
 * **특징 공학:** 웨이블릿(`sym3`) 디노이징, 파고율(Crest Factor) 추출 — 레일 단차 충격 특징 강조.
 * **프론트엔드 / 디지털 트윈:** HTML/Vanilla JS, Tailwind CSS, Godot 3D (시연·시각화).
 
 ## 시스템 아키텍처 및 개발 로드맵
 
-프로젝트는 총 4개의 Phase로 나뉩니다. 현재 ESP32-C3 WiFi WebSocket 수집, 현재 센서용 RBF 추론, InfluxDB 저장, 시연용 더미 스트리머와 시각화가 구현되어 있습니다.
+프로젝트는 총 4개의 Phase로 나뉩니다. 현재 ESP32-C3 WiFi MQTTS 수집, 현재 센서용 RBF 추론, InfluxDB 저장, 시연용 더미 스트리머와 시각화가 구현되어 있습니다.
 
 ### Phase 1: Sensor & Edge (펌웨어 구현, 실물 교정·검증 필요)
 
-* ESP32-C3 Mini와 MPU-6050, ADS1115, GTRIC M18 센서를 결합한 최종 센서 모듈 구성.
-* MPU6050 100Hz, ADS1115 20Hz 수집 후 10개 샘플을 WebSocket JSON 배치로 전송.
+* 좌·우 구동부에 고유 ID와 레일 방향을 가진 ESP32-C3 센서 모듈을 각각 구성.
+* MPU6050 100Hz, ADS1115 20Hz 수집 후 10개 샘플을 MQTT QoS 1 JSON 배치로 전송.
 * GTRIC 센서의 실제 출력과 분압 회로, 엔코더 회전당 계수는 실측 후 펌웨어 설정에 반영.
 * 저장소의 ESP32-S3·ADXL345·HC-SR04 펌웨어는 과거 작업 열람용으로만 보존.
 
 ### Phase 2: Backend & Real-Time Data Stream (프로토타입 완료, 고도화 예정)
 
-* **센서 업링크:** ESP32-C3 → WiFi → `/ws/sensor` → FastAPI 비동기 Queue.
+* **센서 업링크:** ESP32-C3 → WiFi → MQTTS QoS 1 → NCP Mosquitto → FastAPI 구독 → 비동기 Queue.
 * **분석 다운링크:** FastAPI → `/ws` → 웹 대시보드 / Godot.
 * **시연:** `DEMO_MODE=true`일 때 1m 레일·40~50cm 단차 충격 더미 스트리머(10Hz)로 파이프라인 검증.
 
@@ -53,16 +53,16 @@
 
 ## 프로토타입 실행 방법 (Getting Started)
 
-1. **펌웨어 설정:** `firmware/esp32_c3_rail_sensor/`에서 `secrets.h.example`을 `secrets.h`로 복사하고 WiFi·센서 토큰·인증서를 설정합니다.
+1. **펌웨어 설정:** `firmware/esp32_c3_rail_sensor/`에서 `secrets.h.example`을 `secrets.h`로 복사하고 WiFi와 해당 보드 MQTT 비밀번호를 설정합니다.
 2. **과거 펌웨어 열람:** `firmware/crane_sensor/crane_sensor.ino`는 취소된 ESP32-S3·ADXL345·HC-SR04 프로토타입의 기록이며 현재 장치에 업로드하지 않습니다.
-3. **환경 설정:** `.env.example`을 `.env`로 복사하고 ESP32와 같은 `SENSOR_AUTH_TOKEN`을 사용합니다. 실물 입력은 `DEMO_MODE=false`입니다.
+3. **환경 설정:** `.env.example`을 `.env`로 복사하고 좌·우·백엔드 MQTT 비밀번호를 설정합니다. 실물 입력은 `DEMO_MODE=false`입니다.
 4. **모델 학습 (최초 1회):** `python3 ml/train_rbf_surrogate.py` → `rbf_dummy_model.pth` 생성.
 5. **백엔드 가동:** `uvicorn main:app --host 0.0.0.0 --port 8000`
-6. **센서/화면 접속:** ESP32는 `ws(s)://서버/ws/sensor`, 대시보드와 Godot는 `ws(s)://서버/ws`를 사용합니다.
+6. **센서/화면 접속:** ESP32는 `mqtt://223.130.128.198:1883`, 웹 대시보드는 `https://223.130.128.198:8000/dashboard`, Godot는 `wss://223.130.128.198:8000/ws`를 사용합니다.
 
 ## 개발보고서 및 AI 인계
 
-* **ESP32 WebSocket 계약:** [`docs/esp32-websocket-contract.md`](docs/esp32-websocket-contract.md)
+* **ESP32 MQTT 계약:** [`docs/esp32-mqtt-contract.md`](docs/esp32-mqtt-contract.md)
 * **공식 PDF 양식 항목표:** [`docs/development-report-template-map.md`](docs/development-report-template-map.md)
 * **프로젝트 통합 문맥:** [`docs/notion-project-context.md`](docs/notion-project-context.md)
 * **센서 하드웨어 변경 이력:** [`docs/hardware-configuration-history.md`](docs/hardware-configuration-history.md)

@@ -19,6 +19,11 @@ if [[ ! -f "$APP_DIR/cert.pem" || ! -f "$APP_DIR/key.pem" ]]; then
   echo "[deploy] WARN: cert.pem/key.pem 없음 — HTTPS 기동 전 인증서를 배치하세요." >&2
 fi
 
+if [[ -x "$APP_DIR/venv/bin/python" ]] && ! "$APP_DIR/venv/bin/python" -c "import paho.mqtt.client" >/dev/null 2>&1; then
+  echo "[deploy] paho-mqtt missing — installing MQTT dependency"
+  "$APP_DIR/venv/bin/pip" install --no-cache-dir 'paho-mqtt>=2.1.0'
+fi
+
 if [[ "${INSTALL_DEPS:-0}" == "1" && -x "$APP_DIR/venv/bin/pip" ]]; then
   echo "[deploy] pip install (no-cache) INSTALL_DEPS=1"
   "$APP_DIR/venv/bin/pip" install --no-cache-dir -r "$APP_DIR/requirements.txt"

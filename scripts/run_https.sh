@@ -9,7 +9,11 @@
 
 set -euo pipefail
 
-DOMAIN="${SSL_DOMAIN:-hp028-railtwin.duckdns.org}"
+DOMAIN="${SSL_DOMAIN:-}"
+if [[ -z "$DOMAIN" ]]; then
+  echo "[run_https] SSL_DOMAIN 이 필요합니다. 현재 NCP 대시보드는 https://223.130.128.198:8000/dashboard 입니다." >&2
+  exit 1
+fi
 CERT="${SSL_CERTFILE:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
 KEY="${SSL_KEYFILE:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
 HOST="${HOST:-0.0.0.0}"

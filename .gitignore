@@ -20,6 +20,7 @@ build/
 # NCP 서버 로컬 SSL (호스트 전용 — 깃에 올리지 않음)
 /cert.pem
 /key.pem
+/deploy/mosquitto/certs/*.pem
 
 # 학습된 모델 가중치 (재생성 가능한 산출물)
 *.pth

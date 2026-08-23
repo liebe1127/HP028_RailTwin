@@ -2,6 +2,22 @@
 
 #include <Arduino.h>
 
+#if __has_include("node_profile.h")
+#include "node_profile.h"
+#else
+#error "Copy node_profile.left.h.example or node_profile.right.h.example to node_profile.h before compiling."
+#endif
+
+#if defined(RAIL_NODE_LEFT) && defined(RAIL_NODE_RIGHT)
+#error "Select exactly one rail node profile."
+#elif !defined(RAIL_NODE_LEFT) && !defined(RAIL_NODE_RIGHT)
+#error "node_profile.h must define RAIL_NODE_LEFT or RAIL_NODE_RIGHT."
+#endif
+
+static_assert(
+    NODE_ENCODER_DIRECTION == 1 || NODE_ENCODER_DIRECTION == -1,
+    "NODE_ENCODER_DIRECTION must be 1 or -1.");
+
 // Hardware pins. Verify these values against the assembled ESP32-C3 Mini module.
 constexpr int PIN_I2C_SDA = 8;
 constexpr int PIN_I2C_SCL = 9;
@@ -12,37 +28,31 @@ constexpr uint8_t ADS1115_ADDRESS = 0x48;
 constexpr uint8_t MPU6050_ADDRESS = 0x68;
 constexpr uint8_t ADS1115_CHANNEL = 0;
 
-// Acquisition: 100 Hz sampling, 10 samples per WebSocket batch (10 Hz upload).
+// Acquisition: 100 Hz sampling, 10 samples per MQTT batch (10 Hz upload).
 constexpr uint32_t SAMPLE_INTERVAL_US = 10'000;
 constexpr size_t SAMPLES_PER_BATCH = 10;
 constexpr uint32_t ADC_INTERVAL_US = 50'000;
 
-// Retry buffer. Oldest unacknowledged batch is discarded only when this is full.
+// Offline retry buffer. Oldest unpublished batch is discarded only when this is full.
 constexpr size_t MAX_PENDING_BATCHES = 24;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 5'000;
-constexpr uint32_t WS_RECONNECT_INTERVAL_MS = 3'000;
 
-// Wheel/encoder calibration.
+// Shared wheel geometry. Counts, direction and zero offset are node-specific.
 constexpr float WHEEL_DIAMETER_MM = 53.0f;
-// Set this to the measured quadrature counts per wheel revolution.
-// Position is sent as null while this remains zero.
-constexpr float ENCODER_COUNTS_PER_WHEEL_REV = 0.0f;
 
-// LR18-08U divider and provisional transfer function.
-// Measure the installed resistors and actual voltages before enabling distance conversion.
-constexpr float DIVIDER_TOP_OHM = 470'000.0f;
-constexpr float DIVIDER_BOTTOM_OHM = 68'000.0f;
-constexpr bool ENABLE_LINEAR_DISTANCE_ESTIMATE = false;
+// LR18-08U nominal transfer range. Divider and calibration enable are node-specific.
 constexpr float SENSOR_OUTPUT_MIN_V = 0.0f;
 constexpr float SENSOR_OUTPUT_MAX_V = 10.0f;
 constexpr float SENSOR_DISTANCE_MIN_MM = 1.0f;
 constexpr float SENSOR_DISTANCE_MAX_MM = 8.0f;
 
-constexpr char DEVICE_ID[] = "rail-sensor-01";
-constexpr char RAIL_SIDE[] = "left";
-constexpr char FIRMWARE_VERSION[] = "0.1.0";
+constexpr char FIRMWARE_VERSION[] = "0.3.0";
 
-constexpr char WS_HOST[] = "hp028-railtwin.duckdns.org";
-constexpr uint16_t WS_PORT = 443;
-constexpr char WS_PATH[] = "/ws/sensor";
-constexpr bool WS_USE_TLS = true;
+// Public NCP endpoint. No hostname/TLS until a new domain is issued.
+constexpr char MQTT_HOST[] = "223.130.128.198";
+constexpr uint16_t MQTT_PORT = 1883;
+constexpr char MQTT_TOPIC_PREFIX[] = "rail/v1/nodes";
+constexpr bool MQTT_USE_TLS = false;
+constexpr uint8_t MQTT_QOS = 1;
+constexpr uint16_t MQTT_KEEPALIVE_SECONDS = 30;
+constexpr uint16_t MQTT_MAX_PACKET_BYTES = 12'288;
