@@ -4,10 +4,12 @@ main.py
 주행 진동·가속도 수집 → 특징 공학 → RBF로 하부 레일 변형(단차·침하·뒤틀림) 지표 추론
 
 아키텍처:
-  [ESP32-C3] --WiFi WebSocket /ws/sensor--> [asyncio.Queue] --> [Consumer Task] --> [InfluxDB]
-  [더미 스트리머] --------------------------------------------->            --> [RBF 레일 변형 추론]
-                                                                                --> [left/right rail_risk]
-                                                                                --> [WebSocket /ws]
+  [ESP32-C3] --MQTTS QoS 1--> [Mosquitto] --> [MQTT Subscriber] --> [asyncio.Queue]
+  [더미 스트리머] -----------------------------------------------------------> [Consumer Task]
+                                                                                 --> [InfluxDB]
+                                                                                 --> [RBF 레일 변형 추론]
+                                                                                 --> [left/right rail_risk]
+                                                                                 --> [WebSocket /ws]
 
 실행:
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -17,7 +19,11 @@ WebSocket 테스트:
   # 또는 브라우저 콘솔: new WebSocket("ws://localhost:8000/ws")
 
 환경 변수 (.env 파일 또는 shell export):
-  SENSOR_AUTH_TOKEN sensor-uplink-bearer-token
+  MQTT_HOST         127.0.0.1
+  MQTT_PORT         1883
+  MQTT_USERNAME     railtwin-backend
+  MQTT_PASSWORD     broker-password
+  MQTT_TLS          true|false
   DEMO_MODE         true|false
   INFLUX_URL       http://localhost:8086
   INFLUX_TOKEN     your-influxdb-token
@@ -30,7 +36,6 @@ WebSocket 테스트:
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import os
@@ -41,6 +46,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import paho.mqtt.client as mqtt
 import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -63,10 +69,25 @@ from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_ba
 # ─────────────────────────────────────────────
 load_dotenv()
 
-SENSOR_AUTH_TOKEN: str = os.getenv("SENSOR_AUTH_TOKEN", "")
-SENSOR_WS_MAX_MESSAGE_BYTES: int = int(
-    os.getenv("SENSOR_WS_MAX_MESSAGE_BYTES", "65536")
+MQTT_HOST: str = os.getenv("MQTT_HOST", "127.0.0.1")
+MQTT_PORT: int = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USERNAME: str = os.getenv("MQTT_USERNAME", "railtwin-backend")
+MQTT_PASSWORD: str = os.getenv("MQTT_PASSWORD") or os.getenv(
+    "MQTT_BACKEND_PASSWORD", ""
 )
+MQTT_TLS: bool = os.getenv("MQTT_TLS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MQTT_CA_CERT: str = os.getenv("MQTT_CA_CERT", "")
+MQTT_CLIENT_ID: str = os.getenv("MQTT_CLIENT_ID", "railtwin-backend")
+MQTT_TOPIC_PREFIX: str = os.getenv("MQTT_TOPIC_PREFIX", "rail/v1/nodes").strip("/")
+MQTT_TELEMETRY_TOPIC: str = f"{MQTT_TOPIC_PREFIX}/+/telemetry"
+MQTT_STATUS_TOPIC: str = f"{MQTT_TOPIC_PREFIX}/+/status"
+MQTT_KEEPALIVE_SECONDS: int = int(os.getenv("MQTT_KEEPALIVE_SECONDS", "30"))
+MQTT_MAX_PAYLOAD_BYTES: int = int(os.getenv("MQTT_MAX_PAYLOAD_BYTES", "65536"))
 DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").strip().lower() in {
     "1",
     "true",
@@ -106,6 +127,7 @@ PRED_RISK_SCALE = 5.0
 rail_risk_state: dict[str, list[float]] = {
     side: [0.0] * RAIL_SEGMENT_COUNT for side in RAIL_SIDES
 }
+latest_ws_payload_by_side: dict[str, dict] = {}
 
 # ─────────────────────────────────────────────
 #  로거 설정
@@ -172,19 +194,74 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-sensor_ws_clients = 0
-sensor_last_batch_seq: dict[tuple[str, str], int] = {}
+sensor_last_batch_seq: dict[tuple[str, str, str], int] = {}
+sensor_node_state: dict[str, dict] = {}
+mqtt_ingest_queue: asyncio.Queue[tuple[str, bytes, float]] = asyncio.Queue(
+    maxsize=QUEUE_MAX_SIZE
+)
+mqtt_state: dict = {
+    "connected": False,
+    "messages_received": 0,
+    "messages_rejected": 0,
+    "last_message_at": None,
+    "last_error": None,
+}
 
 
-def sensor_authorized(ws: WebSocket) -> bool:
-    """필수 Authorization Bearer 센서 토큰을 상수 시간 비교로 검증한다."""
-    if not SENSOR_AUTH_TOKEN:
-        return False
-    authorization = ws.headers.get("authorization", "")
-    scheme, _, token = authorization.partition(" ")
-    return scheme.lower() == "bearer" and hmac.compare_digest(
-        token.strip(), SENSOR_AUTH_TOKEN
+def sensor_stream_key(batch: dict) -> tuple[str, str, str]:
+    """장치 재부팅 후 1부터 다시 시작하는 배치 순번을 별도 스트림으로 구분한다."""
+    return (
+        str(batch["device_id"]),
+        str(batch["rail_side"]),
+        str(batch["boot_id"]),
     )
+
+
+def record_sensor_node_batch(batch: dict) -> None:
+    """MQTT 텔레메트리를 기준으로 좌·우 노드의 최신 상태를 기록한다."""
+    side = str(batch["rail_side"])
+    previous = sensor_node_state.get(side, {})
+    same_boot = previous.get("boot_id") == batch.get("boot_id")
+    batch_seq = int(batch["batch_seq"])
+    dropped_batches = int(batch.get("dropped_batches", 0))
+    if same_boot:
+        batch_seq = max(batch_seq, int(previous.get("last_batch_seq", -1)))
+        dropped_batches = max(
+            dropped_batches, int(previous.get("dropped_batches", 0))
+        )
+    sensor_node_state[side] = {
+        "device_id": str(batch["device_id"]),
+        "rail_side": side,
+        "boot_id": batch.get("boot_id"),
+        "firmware_version": batch.get("firmware_version"),
+        "last_batch_seq": batch_seq,
+        "dropped_batches": dropped_batches,
+        "status_flags": int(batch.get("status_flags", 0)),
+        "last_seen": time.time(),
+        "connected": True,
+        "transport": "mqtt",
+    }
+
+
+def record_sensor_node_status(status: dict) -> None:
+    """Retained online 상태와 LWT offline 상태를 노드 진단 정보에 반영한다."""
+    side = str(status["rail_side"])
+    previous = sensor_node_state.get(side, {})
+    sensor_node_state[side] = {
+        **previous,
+        "device_id": str(status["device_id"]),
+        "rail_side": side,
+        "boot_id": status.get("boot_id", previous.get("boot_id")),
+        "firmware_version": status.get(
+            "firmware_version", previous.get("firmware_version")
+        ),
+        "status_flags": int(
+            status.get("status_flags", previous.get("status_flags", 0))
+        ),
+        "last_status_at": time.time(),
+        "connected": status["status"] == "online",
+        "transport": "mqtt",
+    }
 
 
 # ─────────────────────────────────────────────
@@ -468,7 +545,24 @@ def build_side_ws_payload(
         "batch_seq": sample.get("batch_seq"),
         "dropped_batches": sample.get("dropped_batches"),
         "firmware_version": sample.get("firmware_version"),
+        "boot_id": sample.get("boot_id"),
+        "status_flags": sample.get("status_flags"),
         "features": sample.get("_engineered_features"),
+    }
+
+
+def update_downlink_snapshot(source: str, side_payloads: dict[str, dict]) -> dict:
+    """독립적으로 도착한 좌·우 ESP32 결과를 최신 양측 스냅샷으로 결합한다."""
+    for side, payload in side_payloads.items():
+        if side in RAIL_SIDES:
+            latest_ws_payload_by_side[side] = payload
+    return {
+        "source": source,
+        **{
+            side: latest_ws_payload_by_side[side]
+            for side in RAIL_SIDES
+            if side in latest_ws_payload_by_side
+        },
     }
 
 
@@ -476,10 +570,197 @@ async def enqueue_sensor_item(item: dict) -> None:
     if sensor_queue.full():
         try:
             sensor_queue.get_nowait()
+            sensor_queue.task_done()
             logger.warning("큐 오버플로 — 가장 오래된 항목 드롭")
         except asyncio.QueueEmpty:
             pass
     await sensor_queue.put(item)
+
+
+# ─────────────────────────────────────────────
+#  MQTT 센서 업링크: Mosquitto → 계약 검증 → 기존 Queue
+# ─────────────────────────────────────────────
+def mqtt_topic_device(topic: str, suffix: str) -> str | None:
+    prefix_parts = MQTT_TOPIC_PREFIX.split("/")
+    topic_parts = topic.split("/")
+    if (
+        len(topic_parts) != len(prefix_parts) + 2
+        or topic_parts[: len(prefix_parts)] != prefix_parts
+        or topic_parts[-1] != suffix
+    ):
+        return None
+    return topic_parts[-2]
+
+
+async def process_mqtt_message(
+    topic: str,
+    payload_bytes: bytes,
+    received_at: float,
+) -> int:
+    """MQTT 메시지 하나를 검증해 기존 센서 Queue에 넣고 수락 샘플 수를 반환한다."""
+    if len(payload_bytes) > MQTT_MAX_PAYLOAD_BYTES:
+        raise SensorContractError("MQTT payload exceeds configured size limit")
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SensorContractError("MQTT payload must be valid UTF-8 JSON") from exc
+
+    telemetry_device = mqtt_topic_device(topic, "telemetry")
+    if telemetry_device is not None:
+        if not isinstance(payload, dict) or payload.get("device_id") != telemetry_device:
+            raise SensorContractError("MQTT topic device_id does not match payload")
+        queue_items = normalize_sensor_batch(
+            payload,
+            received_at,
+            source="mqtt",
+        )
+        key = sensor_stream_key(payload)
+        batch_seq = int(payload["batch_seq"])
+        last_seq = sensor_last_batch_seq.get(key, -1)
+        record_sensor_node_batch(payload)
+        if batch_seq <= last_seq:
+            logger.info(
+                "MQTT 중복 배치 건너뜀: device=%s boot=%s batch=%d",
+                payload["device_id"],
+                payload["boot_id"],
+                batch_seq,
+            )
+            return 0
+        for item in queue_items:
+            await enqueue_sensor_item(item)
+        sensor_last_batch_seq[key] = batch_seq
+        return len(queue_items)
+
+    status_device = mqtt_topic_device(topic, "status")
+    if status_device is not None:
+        if not isinstance(payload, dict) or payload.get("type") != "node_status":
+            raise SensorContractError("MQTT status payload must be node_status")
+        if payload.get("device_id") != status_device:
+            raise SensorContractError("MQTT status topic device_id does not match payload")
+        if payload.get("rail_side") not in RAIL_SIDES:
+            raise SensorContractError(f"rail_side must be one of {RAIL_SIDES}")
+        if payload.get("status") not in {"online", "offline"}:
+            raise SensorContractError("MQTT node status must be online or offline")
+        record_sensor_node_status(payload)
+        return 0
+
+    raise SensorContractError("MQTT topic is outside the sensor contract")
+
+
+def enqueue_mqtt_ingest(topic: str, payload: bytes, received_at: float) -> None:
+    """Paho 네트워크 스레드가 이벤트 루프에 넘긴 원시 메시지를 제한 큐에 적재한다."""
+    if mqtt_ingest_queue.full():
+        try:
+            mqtt_ingest_queue.get_nowait()
+            mqtt_ingest_queue.task_done()
+            mqtt_state["messages_rejected"] += 1
+            logger.warning("MQTT 수신 큐 오버플로 — 가장 오래된 메시지 드롭")
+        except asyncio.QueueEmpty:
+            pass
+    mqtt_ingest_queue.put_nowait((topic, payload, received_at))
+
+
+async def mqtt_ingest_consumer(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set() or not mqtt_ingest_queue.empty():
+        try:
+            topic, payload, received_at = await asyncio.wait_for(
+                mqtt_ingest_queue.get(),
+                timeout=0.5,
+            )
+        except asyncio.TimeoutError:
+            continue
+        try:
+            await process_mqtt_message(topic, payload, received_at)
+        except SensorContractError as exc:
+            mqtt_state["messages_rejected"] += 1
+            mqtt_state["last_error"] = str(exc)
+            logger.warning("MQTT 센서 메시지 거부 (%s): %s", topic, exc)
+        finally:
+            mqtt_ingest_queue.task_done()
+
+
+async def mqtt_subscriber(stop_event: asyncio.Event) -> None:
+    """Paho MQTT 네트워크 루프를 실행하고 센서 토픽을 QoS 1로 구독한다."""
+    if not MQTT_HOST or not MQTT_USERNAME or not MQTT_PASSWORD:
+        mqtt_state["last_error"] = "MQTT host or credentials are not configured"
+        logger.error("MQTT 연결 설정이 비어 있어 센서 구독을 시작하지 않습니다.")
+        return
+
+    event_loop = asyncio.get_running_loop()
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id=MQTT_CLIENT_ID,
+        clean_session=False,
+        protocol=mqtt.MQTTv311,
+    )
+    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    if MQTT_TLS:
+        client.tls_set(ca_certs=MQTT_CA_CERT or None)
+
+    def on_connect(
+        mqtt_client: mqtt.Client,
+        userdata: object,
+        connect_flags: mqtt.ConnectFlags,
+        reason_code: mqtt.ReasonCode,
+        properties: mqtt.Properties | None,
+    ) -> None:
+        if reason_code.is_failure:
+            mqtt_state["connected"] = False
+            mqtt_state["last_error"] = f"MQTT connect failed: {reason_code}"
+            logger.error("%s", mqtt_state["last_error"])
+            return
+        mqtt_client.subscribe(
+            [(MQTT_TELEMETRY_TOPIC, 1), (MQTT_STATUS_TOPIC, 1)]
+        )
+        mqtt_state["connected"] = True
+        mqtt_state["last_error"] = None
+        logger.info(
+            "MQTT 연결 완료: %s:%d, topics=%s,%s",
+            MQTT_HOST,
+            MQTT_PORT,
+            MQTT_TELEMETRY_TOPIC,
+            MQTT_STATUS_TOPIC,
+        )
+
+    def on_disconnect(
+        mqtt_client: mqtt.Client,
+        userdata: object,
+        disconnect_flags: mqtt.DisconnectFlags,
+        reason_code: mqtt.ReasonCode,
+        properties: mqtt.Properties | None,
+    ) -> None:
+        mqtt_state["connected"] = False
+        if reason_code.is_failure:
+            mqtt_state["last_error"] = f"MQTT disconnected: {reason_code}"
+            logger.warning("%s", mqtt_state["last_error"])
+
+    def on_message(
+        mqtt_client: mqtt.Client,
+        userdata: object,
+        message: mqtt.MQTTMessage,
+    ) -> None:
+        received_at = time.time()
+        mqtt_state["messages_received"] += 1
+        mqtt_state["last_message_at"] = received_at
+        event_loop.call_soon_threadsafe(
+            enqueue_mqtt_ingest,
+            message.topic,
+            bytes(message.payload),
+            received_at,
+        )
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message = on_message
+    client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE_SECONDS)
+    client.loop_start()
+    try:
+        await stop_event.wait()
+    finally:
+        client.disconnect()
+        await asyncio.to_thread(client.loop_stop)
+        mqtt_state["connected"] = False
 
 
 # ─────────────────────────────────────────────
@@ -587,8 +868,10 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
                     "uptime_us": int(ts * 1_000_000),
                     "device_id": f"demo-{side}",
                     "rail_side": side,
+                    "boot_id": None,
                     "batch_seq": sample_seq,
                     "dropped_batches": 0,
+                    "status_flags": 0,
                     "firmware_version": "demo",
                 }
             )
@@ -633,6 +916,9 @@ def build_influx_point(
     firmware_version = sample.get("firmware_version")
     if firmware_version:
         point = point.tag("firmware_version", str(firmware_version))
+    boot_id = sample.get("boot_id")
+    if boot_id:
+        point = point.tag("boot_id", str(boot_id))
 
     float_fields = {
         "position_mm": "position_mm",
@@ -652,6 +938,7 @@ def build_influx_point(
         "uptime_us": "uptime_us",
         "batch_seq": "batch_seq",
         "dropped_batches": "dropped_batches",
+        "status_flags": "status_flags",
     }
     for sensor_key, influx_field in float_fields.items():
         value = sample.get(sensor_key)
@@ -710,7 +997,7 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                 continue
 
             source, samples = split_rail_samples(data)
-            ws_payload: dict = {"source": source}
+            side_payloads: dict[str, dict] = {}
 
             for side, sample in samples.items():
                 pred_rail_deform, crest = predict_rail_deform(sample, side)
@@ -739,7 +1026,7 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                     else None
                 )
                 rail_risk = update_rail_risk(position_cm, risk, side)
-                ws_payload[side] = build_side_ws_payload(
+                side_payloads[side] = build_side_ws_payload(
                     sample,
                     side=side,
                     pred_rail_deform=pred_rail_deform,
@@ -747,7 +1034,9 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                     rail_risk=rail_risk,
                 )
 
-            await ws_manager.broadcast(ws_payload)
+            await ws_manager.broadcast(
+                update_downlink_snapshot(source, side_payloads)
+            )
 
             sensor_queue.task_done()
 
@@ -771,11 +1060,24 @@ async def lifespan(app: FastAPI):
             )
         )
         logger.warning("DEMO_MODE=true → 시연용 더미 스트리머 시작")
+    else:
+        tasks.append(
+            asyncio.create_task(
+                mqtt_ingest_consumer(stop_event), name="mqtt-ingest-consumer"
+            )
+        )
+        tasks.append(
+            asyncio.create_task(
+                mqtt_subscriber(stop_event), name="mqtt-subscriber"
+            )
+        )
     consumer_task = asyncio.create_task(influx_consumer(stop_event), name="influx-consumer")
     tasks.append(consumer_task)
     logger.info(
-        "백그라운드 태스크 시작 (demo_mode=%s, ESP32=/ws/sensor)",
+        "백그라운드 태스크 시작 (demo_mode=%s, mqtt=%s:%d)",
         DEMO_MODE,
+        MQTT_HOST,
+        MQTT_PORT,
     )
 
     try:
@@ -816,8 +1118,17 @@ async def health_check():
         "queue_size": sensor_queue.qsize(),
         "queue_max": QUEUE_MAX_SIZE,
         "ws_clients": ws_manager.client_count,
-        "sensor_ws_clients": sensor_ws_clients,
-        "sensor_auth_configured": bool(SENSOR_AUTH_TOKEN),
+        "mqtt": {
+            **mqtt_state,
+            "host": MQTT_HOST,
+            "port": MQTT_PORT,
+            "tls": MQTT_TLS,
+            "telemetry_topic": MQTT_TELEMETRY_TOPIC,
+            "status_topic": MQTT_STATUS_TOPIC,
+            "auth_configured": bool(MQTT_USERNAME and MQTT_PASSWORD),
+            "ingest_queue_size": mqtt_ingest_queue.qsize(),
+        },
+        "sensor_nodes": sensor_node_state,
         "ai_model_loaded": ml_state.get("model") is not None,
         "ai_model_device": str(ml_state.get("device")) if ml_state.get("device") else None,
         "demo_mode": DEMO_MODE,
@@ -851,91 +1162,9 @@ async def rail_risk_reset(side: Optional[str] = None):
 
 
 # ─────────────────────────────────────────────
-#  WebSocket 엔드포인트
-#  센서 업링크: wss://host/ws/sensor
-#  화면 다운링크: wss://host/ws
+#  화면 다운링크 WebSocket 엔드포인트
+#  센서 업링크는 Mosquitto MQTTS 토픽을 사용한다.
 # ─────────────────────────────────────────────
-@app.websocket("/ws/sensor")
-async def sensor_websocket_endpoint(ws: WebSocket):
-    global sensor_ws_clients
-
-    if not sensor_authorized(ws):
-        await ws.close(code=1008, reason="invalid sensor token")
-        return
-
-    await ws.accept()
-    sensor_ws_clients += 1
-    logger.info("센서 WebSocket 연결: 현재 센서 수=%d", sensor_ws_clients)
-    try:
-        while True:
-            raw_message = await ws.receive_text()
-            if len(raw_message.encode("utf-8")) > SENSOR_WS_MAX_MESSAGE_BYTES:
-                await ws.send_json(
-                    {"type": "error", "code": "message_too_large"}
-                )
-                await ws.close(code=1009)
-                return
-
-            try:
-                message = json.loads(raw_message)
-            except json.JSONDecodeError:
-                await ws.send_json({"type": "error", "code": "invalid_json"})
-                continue
-
-            if isinstance(message, dict) and message.get("type") == "hello":
-                await ws.send_json(
-                    {
-                        "type": "hello_ack",
-                        "schema_version": 1,
-                        "server_time_ms": int(time.time() * 1000),
-                    }
-                )
-                continue
-
-            received_at = time.time()
-            try:
-                queue_items = normalize_sensor_batch(message, received_at)
-            except SensorContractError as exc:
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "code": "invalid_sensor_batch",
-                        "detail": str(exc),
-                    }
-                )
-                continue
-
-            batch = message
-            key = (str(batch["device_id"]), str(batch["rail_side"]))
-            batch_seq = int(batch["batch_seq"])
-            last_seq = sensor_last_batch_seq.get(key, -1)
-            if batch_seq <= last_seq:
-                await ws.send_json(
-                    {
-                        "type": "ack",
-                        "batch_seq": batch_seq,
-                        "duplicate": True,
-                    }
-                )
-                continue
-
-            for item in queue_items:
-                await sensor_queue.put(item)
-            sensor_last_batch_seq[key] = batch_seq
-            await ws.send_json(
-                {
-                    "type": "ack",
-                    "batch_seq": batch_seq,
-                    "accepted_samples": len(queue_items),
-                }
-            )
-    except WebSocketDisconnect:
-        pass
-    finally:
-        sensor_ws_clients = max(0, sensor_ws_clients - 1)
-        logger.info("센서 WebSocket 해제: 현재 센서 수=%d", sensor_ws_clients)
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws_manager.connect(ws)

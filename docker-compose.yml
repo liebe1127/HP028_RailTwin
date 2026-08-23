@@ -1,10 +1,35 @@
-# RailTwin FastAPI + WebSocket (Naver Cloud / 로컬 Docker 공통)
+# RailTwin FastAPI + Mosquitto + 화면 WebSocket (로컬 Docker)
 # 사용: docker compose up -d --build
-# 접속(HTTP): http://서버공인IP:8000/  ·  ws://서버공인IP:8000/ws
-# HTTPS 운영: docker compose -f docker-compose.https.yml up -d --build
-#   → https://hp028-railtwin.duckdns.org/  ·  wss://hp028-railtwin.duckdns.org/ws
+# 접속: https://223.130.128.198:8000/dashboard  ·  wss://223.130.128.198:8000/ws
+# MQTT: mqtt://223.130.128.198:1883
 
 services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: railtwin-mqtt
+    ports:
+      - "1883:1883"
+    environment:
+      MQTT_TLS: "false"
+      MQTT_LEFT_PASSWORD: ${MQTT_LEFT_PASSWORD:-replace-with-left-node-password}
+      MQTT_RIGHT_PASSWORD: ${MQTT_RIGHT_PASSWORD:-replace-with-right-node-password}
+      MQTT_BACKEND_PASSWORD: ${MQTT_BACKEND_PASSWORD:-replace-with-backend-password}
+    volumes:
+      - ./deploy/mosquitto:/mosquitto/config:ro
+      - mosquitto-data:/mosquitto/data
+    command: ["/bin/sh", "/mosquitto/config/start.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mosquitto_sub -h 127.0.0.1 -p 1883 -u railtwin-backend -P \"$$MQTT_BACKEND_PASSWORD\" -t '$$SYS/broker/version' -C 1 -W 5",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   railtwin:
     build: .
     container_name: railtwin-api
@@ -20,9 +45,19 @@ services:
       RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
       DEVICE_ID: ${DEVICE_ID:-rail-sensor}
       DEMO_MODE: ${DEMO_MODE:-true}
-      SENSOR_AUTH_TOKEN: ${SENSOR_AUTH_TOKEN:-}
-      SENSOR_WS_MAX_MESSAGE_BYTES: ${SENSOR_WS_MAX_MESSAGE_BYTES:-65536}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-railtwin-backend}
+      MQTT_PASSWORD: ${MQTT_BACKEND_PASSWORD:-replace-with-backend-password}
+      MQTT_TLS: ${MQTT_TLS:-false}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-railtwin-backend-local}
+      MQTT_TOPIC_PREFIX: ${MQTT_TOPIC_PREFIX:-rail/v1/nodes}
+      MQTT_KEEPALIVE_SECONDS: ${MQTT_KEEPALIVE_SECONDS:-30}
+      MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
     restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_started
     # InfluxDB 설정이 비어 있어도 서버·WebSocket은 동작
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
@@ -30,3 +65,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+volumes:
+  mosquitto-data:

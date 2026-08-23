@@ -1,4 +1,4 @@
-"""ESP32-C3 WebSocket sensor contract validation and normalization."""
+"""ESP32-C3 MQTT sensor contract validation and normalization."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ SCHEMA_VERSION = 1
 RAIL_SIDES = ("left", "right")
 MAX_SAMPLES_PER_BATCH = 100
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+BOOT_ID_PATTERN = re.compile(r"^[A-Fa-f0-9]{8,16}$")
 
 
 class SensorContractError(ValueError):
@@ -60,7 +61,12 @@ def _axis_vector(value: Any, field: str) -> tuple[float | None, ...]:
     )
 
 
-def normalize_sensor_batch(payload: object, received_at: float) -> list[dict]:
+def normalize_sensor_batch(
+    payload: object,
+    received_at: float,
+    *,
+    source: str = "mqtt",
+) -> list[dict]:
     """
     Validate one schema-v1 sensor batch and return queue items.
 
@@ -82,9 +88,18 @@ def normalize_sensor_batch(payload: object, received_at: float) -> list[dict]:
     if rail_side not in RAIL_SIDES:
         raise SensorContractError(f"rail_side must be one of {RAIL_SIDES}")
 
+    boot_id = payload.get("boot_id")
+    if not isinstance(boot_id, str) or not BOOT_ID_PATTERN.fullmatch(boot_id):
+        raise SensorContractError("boot_id must be an 8-16 digit hexadecimal string")
+
     batch_seq = _required_int(payload.get("batch_seq"), "batch_seq")
     dropped_batches = _required_int(
         payload.get("dropped_batches", 0), "dropped_batches"
+    )
+    status_flags = _required_int(
+        payload.get("status_flags", 0),
+        "status_flags",
+        maximum=0xFFFFFFFF,
     )
     firmware_version = payload.get("firmware_version")
     if firmware_version is not None and not isinstance(firmware_version, str):
@@ -182,14 +197,16 @@ def normalize_sensor_batch(payload: object, received_at: float) -> list[dict]:
                 "_received_at": sample_received_at,
                 "device_id": device_id,
                 "rail_side": rail_side,
+                "boot_id": boot_id,
                 "batch_seq": batch_seq,
                 "dropped_batches": dropped_batches,
+                "status_flags": status_flags,
                 "firmware_version": firmware_version,
             }
         )
         queue_items.append(
             {
-                "source": "websocket",
+                "source": source,
                 str(rail_side): sample,
             }
         )

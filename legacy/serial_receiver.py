@@ -4,7 +4,7 @@ ESP32-S3 → MacBook 시리얼 수신 프로토타입
 갠트리 크레인 하부 레일 변형 예측용 진동·가속도·거리 데이터를 실시간으로 수신합니다.
 (ADXL345 + MPU-6050 + HC-SR04)
 
-현재 데이터 경로는 ESP32-C3 → WiFi → FastAPI /ws/sensor 입니다.
+현재 데이터 경로는 ESP32-C3 → WiFi MQTTS → Mosquitto → FastAPI 입니다.
 이 파일은 취소된 초기 프로토타입의 변경 이력으로만 보존합니다.
 
 [맥북에서 포트 이름 찾는 방법]

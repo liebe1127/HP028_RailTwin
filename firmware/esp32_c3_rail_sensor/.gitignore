@@ -1,1 +1,4 @@
 secrets.h
+secrets.left.h
+secrets.right.h
+node_profile.h

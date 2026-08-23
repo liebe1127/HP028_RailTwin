@@ -80,12 +80,14 @@
       overflow: hidden;
     }
     .crane-danger {
+      display: none;
       position: absolute;
       top: 0; bottom: 0;
       left: 40%;
       width: 10%;
       background: rgba(244, 63, 94, 0.22);
     }
+    .crane-danger.show { display: block; }
     .crane-dot {
       position: absolute;
       top: 50%;
@@ -98,6 +100,25 @@
       box-shadow: 0 0 12px rgba(45, 212, 191, 0.6);
       transition: left 80ms linear;
     }
+    .spark {
+      width: 100%;
+      height: 72px;
+      display: block;
+    }
+    .flag-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid #334155;
+      padding: 2px 8px;
+      font-size: 10px;
+      color: #94a3b8;
+      margin: 0 4px 4px 0;
+    }
+    .flag-chip.warn {
+      border-color: #9a3412;
+      color: #fdba74;
+    }
   </style>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css" rel="stylesheet" />
@@ -107,8 +128,8 @@
   <header class="flex flex-wrap items-start justify-between gap-4 mb-6">
     <div>
       <p class="text-xs tracking-[0.2em] uppercase text-slate-500 mb-1">실시간 파이프라인</p>
-      <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">더미 스트리머 → AI 추론 → Godot 전송</h1>
-      <p class="text-sm text-slate-400 mt-2">가짜 데이터 없음 · 서버 WebSocket·헬스 API만 표시</p>
+      <h1 id="page-title" class="text-2xl md:text-3xl font-semibold tracking-tight">ESP32 MQTT → AI 추론 → Godot</h1>
+      <p id="page-subtitle" class="text-sm text-slate-400 mt-2">좌·우 노드 배치를 서버가 구독해 화면에 그립니다</p>
     </div>
     <div class="panel px-4 py-3 flex items-center gap-3 min-w-[220px]">
       <span id="dot" class="w-2.5 h-2.5 rounded-full bg-rose-500 hz-live"></span>
@@ -119,11 +140,14 @@
     </div>
   </header>
 
-  <!-- 서버 상태 (GET /) -->
-  <section class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+  <section class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
     <div class="panel p-3">
       <div class="text-[11px] text-slate-500 mb-1">데이터 소스</div>
       <div id="meta-source" class="text-sm font-semibold">—</div>
+    </div>
+    <div class="panel p-3">
+      <div class="text-[11px] text-slate-500 mb-1">MQTT 브로커</div>
+      <div id="meta-mqtt" class="text-sm font-semibold">—</div>
     </div>
     <div class="panel p-3">
       <div class="text-[11px] text-slate-500 mb-1">AI 모델</div>
@@ -138,15 +162,70 @@
       <div id="meta-queue" class="text-sm font-semibold mono">—</div>
     </div>
     <div class="panel p-3">
-      <div class="text-[11px] text-slate-500 mb-1">Hz (실측)</div>
+      <div class="text-[11px] text-slate-500 mb-1">화면 수신 Hz</div>
       <div id="meta-hz" class="text-sm font-semibold mono">—</div>
     </div>
   </section>
 
-  <!-- 3단 파이프라인 -->
+  <section class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+    <article id="node-left" class="panel p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold">LEFT 노드</h2>
+        <span id="node-left-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
+      </div>
+      <div id="node-left-id" class="mono text-sm text-slate-200">rail-left-01</div>
+      <div id="node-left-meta" class="text-[11px] text-slate-500 mt-1">아직 수신 없음</div>
+      <div id="node-left-flags" class="mt-2"></div>
+    </article>
+    <article id="node-right" class="panel p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold">RIGHT 노드</h2>
+        <span id="node-right-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
+      </div>
+      <div id="node-right-id" class="mono text-sm text-slate-200">rail-right-01</div>
+      <div id="node-right-meta" class="text-[11px] text-slate-500 mt-1">아직 수신 없음</div>
+      <div id="node-right-flags" class="mt-2"></div>
+    </article>
+  </section>
+
+  <section class="panel p-4 mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div class="text-[11px] tracking-widest uppercase text-teal-400">실시간 수신</div>
+        <h2 class="text-lg font-semibold">들어오는 데이터</h2>
+      </div>
+      <div class="text-right">
+        <div id="live-seq" class="mono text-2xl font-semibold text-teal-300">—</div>
+        <div class="text-[11px] text-slate-500">sample_seq · 숫자가 움직이면 수신 중</div>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div class="rounded-lg bg-slate-900/60 p-3">
+        <div class="flex justify-between text-[11px] text-slate-500 mb-1">
+          <span>샘플 순번</span>
+          <span id="chart-seq-label" class="mono">—</span>
+        </div>
+        <canvas id="chart-seq" class="spark"></canvas>
+      </div>
+      <div class="rounded-lg bg-slate-900/60 p-3">
+        <div class="flex justify-between text-[11px] text-slate-500 mb-1">
+          <span>수신 속도</span>
+          <span id="chart-rate-label" class="mono">— Hz</span>
+        </div>
+        <canvas id="chart-rate" class="spark"></canvas>
+      </div>
+      <div class="rounded-lg bg-slate-900/60 p-3">
+        <div class="flex justify-between text-[11px] text-slate-500 mb-1">
+          <span>CREST L / PRED L</span>
+          <span id="chart-crest-label" class="mono">—</span>
+        </div>
+        <canvas id="chart-crest" class="spark"></canvas>
+      </div>
+    </div>
+  </section>
+
   <section class="flex flex-col xl:flex-row xl:items-stretch gap-3 mb-6">
 
-    <!-- 1. 더미 스트리머 -->
     <article id="stage-1" class="panel p-4 flex-1 stage-pulse">
       <div class="flex items-center justify-between mb-3">
         <div>
@@ -155,15 +234,15 @@
         </div>
         <span id="zone-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
       </div>
-      <p class="text-xs text-slate-400 mb-4">ESP32-C3 WiFi WebSocket · MPU6050 · LR18-08U</p>
+      <p class="text-xs text-slate-400 mb-4">ESP32 MQTT · MPU-6050 · LR18-08U · 엔코더. 값이 비면 해당 센서가 아직 없음</p>
 
       <div class="mb-3">
         <div class="flex justify-between text-[11px] text-slate-500 mb-1">
           <span>크레인 위치</span>
-          <span id="val-x" class="mono">— cm</span>
+          <span id="val-x" class="mono">—</span>
         </div>
         <div class="crane-track">
-          <div class="crane-danger" title="위험 구간 40~50cm"></div>
+          <div id="crane-danger" class="crane-danger" title="시연용 더미 위험 구간 40~50cm"></div>
           <div id="crane-dot" class="crane-dot" style="left:0%"></div>
         </div>
       </div>
@@ -193,6 +272,18 @@
           <div class="text-[10px] text-slate-500">MPU AZ R</div>
           <div id="val-accel-z-r" class="mono text-sm">—</div>
         </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">GYRO X L</div>
+          <div id="val-gyro-x-l" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">GYRO Y L</div>
+          <div id="val-gyro-y-l" class="mono text-sm">—</div>
+        </div>
+        <div class="rounded-lg bg-slate-900/60 p-2">
+          <div class="text-[10px] text-slate-500">GYRO Z L</div>
+          <div id="val-gyro-z-l" class="mono text-sm">—</div>
+        </div>
       </div>
       <div class="grid grid-cols-2 gap-2 mt-2 text-center">
         <div class="rounded-lg bg-slate-900/60 p-2">
@@ -208,7 +299,6 @@
 
     <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
 
-    <!-- 2. AI -->
     <article id="stage-2" class="panel p-4 flex-1 stage-pulse">
       <div class="flex items-center justify-between mb-3">
         <div>
@@ -254,7 +344,6 @@
 
     <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
 
-    <!-- 3. Godot / WS -->
     <article id="stage-3" class="panel p-4 flex-1 stage-pulse">
       <div class="flex items-center justify-between mb-3 gap-2">
         <div>
@@ -283,7 +372,6 @@
     </article>
   </section>
 
-  <!-- 실시간 로그 -->
   <section class="panel p-4">
     <div class="flex items-center justify-between mb-3">
       <h2 class="text-sm font-semibold">실시간 이벤트</h2>
@@ -320,6 +408,14 @@
     const CREST_MAX = 10;
     const PRED_MAX = 40;
     const X_MAX = 100;
+    const UI_MIN_MS = 80;
+    const SPARK_POINTS = 90;
+    const FLAG_BITS = [
+      [1, 'MPU 없음'],
+      [2, 'ADS 없음'],
+      [4, '엔코더 미교정'],
+      [8, '거리 미교정'],
+    ];
 
     document.getElementById('ws-url-label').textContent = WS_URL;
 
@@ -327,7 +423,14 @@
     let reconnectTimer = null;
     let msgCount = 0;
     let lastMsgAt = 0;
+    let lastPaintAt = 0;
+    let pendingPayload = null;
+    let paintTimer = null;
+    let demoMode = null;
     const hzSamples = [];
+    const sparkSeq = [];
+    const sparkRate = [];
+    const sparkCrest = [];
 
     const riskLeftEl = document.getElementById('risk-left');
     const riskRightEl = document.getElementById('risk-right');
@@ -408,6 +511,78 @@
       while (box.children.length > 40) box.removeChild(box.lastChild);
     }
 
+    function pushSpark(arr, value) {
+      arr.push(value);
+      if (arr.length > SPARK_POINTS) arr.shift();
+    }
+
+    function drawSpark(canvasId, values, color) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas || values.length < 2) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.max(1, canvas.clientWidth || 300);
+      const h = Math.max(1, canvas.clientHeight || 72);
+      if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const min = Math.min.apply(null, values);
+      const max = Math.max.apply(null, values);
+      const span = max - min || 1;
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      values.forEach((value, index) => {
+        const x = (index / (values.length - 1)) * w;
+        const y = h - 6 - ((value - min) / span) * (h - 12);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    function decodeFlags(flags) {
+      const value = Number(flags);
+      if (!Number.isFinite(value) || value === 0) {
+        return '<span class="flag-chip">센서 정상/교정됨</span>';
+      }
+      return FLAG_BITS
+        .filter(([bit]) => (value & bit) !== 0)
+        .map(([, label]) => `<span class="flag-chip warn">${label}</span>`)
+        .join('');
+    }
+
+    function setNodeCard(side, node, live) {
+      const badge = document.getElementById(`node-${side}-badge`);
+      const idEl = document.getElementById(`node-${side}-id`);
+      const meta = document.getElementById(`node-${side}-meta`);
+      const flags = document.getElementById(`node-${side}-flags`);
+      const connected = Boolean(node && node.connected) || Boolean(live && live.device_id);
+      const deviceId = (live && live.device_id) || (node && node.device_id) || `rail-${side}-01`;
+      const batchSeq = (live && live.batch_seq) ?? (node && node.last_batch_seq);
+      const firmware = (live && live.firmware_version) || (node && node.firmware_version) || '—';
+      const boot = (live && live.boot_id) || (node && node.boot_id) || '—';
+      const statusFlags = (live && live.status_flags) ?? (node && node.status_flags);
+      idEl.textContent = deviceId;
+      if (connected) {
+        badge.textContent = '수신 중';
+        badge.className = 'text-xs px-2 py-1 rounded-full border border-teal-700 text-teal-300';
+      } else {
+        badge.textContent = '대기';
+        badge.className = 'text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400';
+      }
+      meta.textContent = `fw ${firmware} · boot ${boot} · batch ${batchSeq ?? '—'}`;
+      flags.innerHTML = decodeFlags(statusFlags);
+    }
+
+    function currentHz() {
+      if (!hzSamples.length) return 0;
+      return hzSamples.reduce((a, b) => a + b, 0) / hzSamples.length;
+    }
+
     function updateHz() {
       const now = performance.now();
       if (lastMsgAt > 0) {
@@ -415,8 +590,7 @@
         if (dt > 0 && dt < 2000) {
           hzSamples.push(1000 / dt);
           if (hzSamples.length > 20) hzSamples.shift();
-          const avg = hzSamples.reduce((a, b) => a + b, 0) / hzSamples.length;
-          document.getElementById('meta-hz').textContent = avg.toFixed(1) + ' Hz';
+          document.getElementById('meta-hz').textContent = currentHz().toFixed(1) + ' Hz';
         }
       }
       lastMsgAt = now;
@@ -429,10 +603,28 @@
           fetch(HTTP_BASE + '/', { cache: 'no-store' }).then((r) => r.json()),
           fetch(HTTP_BASE + '/ws/clients', { cache: 'no-store' }).then((r) => r.json()),
         ]);
-        document.getElementById('meta-source').textContent = h.demo_mode
+        demoMode = Boolean(h.demo_mode);
+        const mqttConnected = Boolean(h.mqtt && h.mqtt.connected);
+        const mqttCount = (h.mqtt && h.mqtt.messages_received) || 0;
+        const liveNodes = Object.values(h.sensor_nodes || {}).filter(
+          (node) => node && node.connected
+        ).length;
+        document.getElementById('page-title').textContent = demoMode
+          ? '더미 스트리머 → AI 추론 → Godot 전송'
+          : 'ESP32 MQTT → AI 추론 → Godot';
+        document.getElementById('page-subtitle').textContent = demoMode
+          ? '시연용 합성 데이터입니다. DEMO_MODE=false면 실제 MQTT 노드가 표시됩니다'
+          : '좌·우 ESP32 배치를 Mosquitto에서 받아 화면에 그립니다';
+        document.getElementById('meta-source').textContent = demoMode
           ? '더미 스트리머'
-          : (h.sensor_ws_clients > 0 ? 'WiFi ESP32-C3' : '센서 연결 대기');
-        document.getElementById('meta-source').style.color = h.demo_mode ? 'var(--stage1)' : '#a78bfa';
+          : (liveNodes > 0
+            ? `MQTT ESP32 (${liveNodes})`
+            : (mqttConnected ? '브로커 연결, 센서 대기' : '센서 연결 대기'));
+        document.getElementById('meta-source').style.color = demoMode ? 'var(--stage1)' : '#a78bfa';
+        document.getElementById('meta-mqtt').textContent = demoMode
+          ? '시연 모드'
+          : (mqttConnected ? `연결 · 수신 ${mqttCount}` : '끊김');
+        document.getElementById('meta-mqtt').style.color = (!demoMode && mqttConnected) ? 'var(--stage1)' : 'var(--muted)';
         document.getElementById('meta-ai').textContent = h.ai_model_loaded
           ? `로드됨 (${h.ai_model_device || 'cpu'})`
           : '미로드';
@@ -440,15 +632,19 @@
         document.getElementById('meta-ws').textContent = String(c.connected_clients ?? h.ws_clients ?? '—');
         document.getElementById('meta-queue').textContent =
           `${h.queue_size ?? 0} / ${h.queue_max ?? '—'} · 수신 ${msgCount}`;
+        setNodeCard('left', (h.sensor_nodes || {}).left, null);
+        setNodeCard('right', (h.sensor_nodes || {}).right, null);
       } catch (e) {
         /* 헬스 실패해도 WS만 되면 표시는 유지 */
       }
     }
 
     function applyPayload(data) {
+      const source = data.source || (demoMode ? 'demo' : 'mqtt');
       const left = data.left && typeof data.left === 'object' ? data.left : data;
       const right = data.right && typeof data.right === 'object' ? data.right : null;
       const x = left.distance_x ?? (right && right.distance_x);
+      const seq = left.sample_seq ?? (right && right.sample_seq);
 
       pulse('stage-1');
       pulse('stage-2');
@@ -456,20 +652,31 @@
       updateHz();
 
       const xn = Number(x);
-      document.getElementById('val-x').textContent = Number.isFinite(xn) ? `${xn.toFixed(0)} cm` : '— cm';
-      if (Number.isFinite(xn)) {
+      const hasPosition = Number.isFinite(xn);
+      document.getElementById('val-x').textContent = hasPosition
+        ? `${xn.toFixed(0)} cm`
+        : (left.position_mm == null ? '위치 없음' : '—');
+      document.getElementById('crane-danger').classList.toggle('show', source === 'demo');
+      if (hasPosition) {
         document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / X_MAX) * 100)) + '%';
-        const danger = xn >= 40 && xn <= 50;
+        const danger = source === 'demo' && xn >= 40 && xn <= 50;
         const badge = document.getElementById('zone-badge');
-        badge.textContent = danger ? '위험 구간 (단차)' : '정상 구간';
+        badge.textContent = danger ? '위험 구간 (단차)' : (source === 'demo' ? '정상 구간' : 'MQTT 수신');
         badge.className = danger
           ? 'text-xs px-2 py-1 rounded-full border border-rose-700 text-rose-300'
           : 'text-xs px-2 py-1 rounded-full border border-teal-800 text-teal-300';
+      } else {
+        document.getElementById('zone-badge').textContent = '엔코더 미교정';
+        document.getElementById('zone-badge').className =
+          'text-xs px-2 py-1 rounded-full border border-amber-800 text-amber-300';
       }
 
       document.getElementById('val-accel-x-l').textContent = fmt(left.accel_x, 3);
       document.getElementById('val-accel-y-l').textContent = fmt(left.accel_y, 3);
       document.getElementById('val-accel-z-l').textContent = fmt(left.accel_z, 3);
+      document.getElementById('val-gyro-x-l').textContent = fmt(left.gyro_x, 3);
+      document.getElementById('val-gyro-y-l').textContent = fmt(left.gyro_y, 3);
+      document.getElementById('val-gyro-z-l').textContent = fmt(left.gyro_z, 3);
       document.getElementById('val-distance-l').textContent =
         `${fmt(left.sensor_distance_mm, 3)} mm`;
       if (right) {
@@ -494,31 +701,57 @@
       paintRisk(riskLeftEl, left.rail_risk);
       if (right) paintRisk(riskRightEl, right.rail_risk);
 
+      if (Number.isFinite(Number(seq))) {
+        document.getElementById('live-seq').textContent = String(seq);
+        pushSpark(sparkSeq, Number(seq));
+        document.getElementById('chart-seq-label').textContent = String(seq);
+        drawSpark('chart-seq', sparkSeq, '#2dd4bf');
+      }
+      const hz = currentHz();
+      if (hz > 0) {
+        pushSpark(sparkRate, hz);
+        document.getElementById('chart-rate-label').textContent = hz.toFixed(1) + ' Hz';
+        drawSpark('chart-rate', sparkRate, '#60a5fa');
+      }
+      if (left.CREST != null) {
+        pushSpark(sparkCrest, Number(left.CREST));
+        document.getElementById('chart-crest-label').textContent =
+          `${fmt(left.CREST)} / ${fmt(left.PRED_RAIL_DEFORM)}`;
+        drawSpark('chart-crest', sparkCrest, '#f59e0b');
+      }
+
+      setNodeCard('left', null, left);
+      if (right) setNodeCard('right', null, right);
+
       const preview = {
+        source,
         left: {
           device_id: left.device_id,
+          sample_seq: left.sample_seq,
+          batch_seq: left.batch_seq,
+          status_flags: left.status_flags,
           distance_x: left.distance_x,
           sensor_distance_mm: left.sensor_distance_mm,
           CREST: left.CREST,
           PRED_RAIL_DEFORM: left.PRED_RAIL_DEFORM,
           dropped_batches: left.dropped_batches,
-          rail_risk_len: Array.isArray(left.rail_risk) ? left.rail_risk.length : 0,
         },
         right: right
           ? {
               device_id: right.device_id,
+              sample_seq: right.sample_seq,
+              batch_seq: right.batch_seq,
+              status_flags: right.status_flags,
               distance_x: right.distance_x,
               sensor_distance_mm: right.sensor_distance_mm,
               CREST: right.CREST,
               PRED_RAIL_DEFORM: right.PRED_RAIL_DEFORM,
               dropped_batches: right.dropped_batches,
-              rail_risk_len: Array.isArray(right.rail_risk) ? right.rail_risk.length : 0,
             }
           : null,
       };
       document.getElementById('payload-preview').textContent = JSON.stringify(preview);
 
-      msgCount += 1;
       document.getElementById('msg-count').textContent = `수신 ${msgCount.toLocaleString()}`;
       document.getElementById('last-updated').textContent =
         `마지막 수신: ${new Date().toLocaleTimeString('ko-KR')}`;
@@ -526,8 +759,31 @@
         document.getElementById('meta-queue').textContent.replace(/수신 \d+/, `수신 ${msgCount}`);
 
       pushLog(
-        `x=${fmt(x, 0)}cm · CREST L/R=${fmt(left.CREST)}/${fmt(right?.CREST)} · PRED L/R=${fmt(left.PRED_RAIL_DEFORM)}/${fmt(right?.PRED_RAIL_DEFORM)}`
+        `${source} seq=${seq ?? '—'} x=${fmt(x, 0)}cm · CREST L/R=${fmt(left.CREST)}/${fmt(right?.CREST)} · PRED L/R=${fmt(left.PRED_RAIL_DEFORM)}/${fmt(right?.PRED_RAIL_DEFORM)}`
       );
+    }
+
+    function flushPending() {
+      if (!pendingPayload) return;
+      const data = pendingPayload;
+      pendingPayload = null;
+      lastPaintAt = performance.now();
+      applyPayload(data);
+    }
+
+    function queuePayload(data) {
+      pendingPayload = data;
+      const now = performance.now();
+      if (now - lastPaintAt >= UI_MIN_MS) {
+        flushPending();
+        return;
+      }
+      if (!paintTimer) {
+        paintTimer = setTimeout(() => {
+          paintTimer = null;
+          flushPending();
+        }, UI_MIN_MS);
+      }
     }
 
     function connect() {
@@ -543,7 +799,8 @@
       };
       ws.onmessage = (ev) => {
         try {
-          applyPayload(JSON.parse(ev.data));
+          msgCount += 1;
+          queuePayload(JSON.parse(ev.data));
         } catch {
           pushLog('JSON 파싱 실패');
         }
@@ -587,12 +844,17 @@
     }
 
     document.getElementById('btn-reset-risk').addEventListener('click', resetRailRisk);
+    window.addEventListener('resize', () => {
+      drawSpark('chart-seq', sparkSeq, '#2dd4bf');
+      drawSpark('chart-rate', sparkRate, '#60a5fa');
+      drawSpark('chart-crest', sparkCrest, '#f59e0b');
+    });
 
     ensureSegments(riskLeftEl, 20);
     ensureSegments(riskRightEl, 20);
     connect();
     refreshHealth();
-    setInterval(refreshHealth, 5000);
+    setInterval(refreshHealth, 2000);
   </script>
 </body>
 </html>

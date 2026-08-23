@@ -21,7 +21,7 @@ extends Node3D
 
 ## 클라우드: wss://223.130.128.198:8000/ws  |  로컬: ws://127.0.0.1:8000/ws
 @export var websocket_url: String = "wss://223.130.128.198:8000/ws"
-## 자체 서명(NCP) 인증서면 true — TLS 검증 생략(시연용). Let's Encrypt면 false.
+## 공인 IP HTTPS는 보통 자체 서명이라 시연에서는 TLS 검증을 생략한다.
 @export var tls_insecure: bool = true
 @export var reconnect_sec: float = 3.0
 

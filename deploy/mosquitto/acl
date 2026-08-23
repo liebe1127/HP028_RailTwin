@@ -1,0 +1,12 @@
+user rail-left-01
+topic write rail/v1/nodes/rail-left-01/telemetry
+topic write rail/v1/nodes/rail-left-01/status
+
+user rail-right-01
+topic write rail/v1/nodes/rail-right-01/telemetry
+topic write rail/v1/nodes/rail-right-01/status
+
+user railtwin-backend
+topic read rail/v1/nodes/+/telemetry
+topic read rail/v1/nodes/+/status
+topic read $SYS/broker/#

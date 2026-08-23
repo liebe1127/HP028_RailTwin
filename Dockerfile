@@ -11,6 +11,7 @@ WORKDIR /app
 # 시스템 의존성 (PyWavelets/numpy 빌드·런타임)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # CPU용 PyTorch 먼저 설치 (CUDA 휠보다 이미지·메모리 부담이 작음)

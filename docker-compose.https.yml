@@ -1,17 +1,43 @@
-# Nginx 없이 Uvicorn SSL — NCP 운영용 HTTPS/WSS (독립 compose)
-# 사전: Certbot으로 아래 경로 인증서 발급 완료
-#   /etc/letsencrypt/live/hp028-railtwin.duckdns.org/{fullchain,privkey}.pem
+# HTTPS/WSS + MQTTS — 도메인이 있을 때만 사용
+# 현재 운영 서버(223.130.128.198)는 도메인이 없어 docker-compose.yml(HTTP 8000 + MQTT 1883)을 씁니다.
+# 새 도메인과 Certbot 인증서를 준비한 뒤에만 이 파일을 사용하세요.
 #
-# 사용 (기존 HTTP 컨테이너 중지 후):
 #   docker compose down
 #   docker compose -f docker-compose.https.yml up -d --build
-#
-# 접속:
-#   https://hp028-railtwin.duckdns.org/
-#   wss://hp028-railtwin.duckdns.org/ws
-#   wss://hp028-railtwin.duckdns.org/ws/sensor  (ESP32-C3 업링크)
 
 services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: railtwin-mqtt
+    user: "0"
+    ports:
+      - "8883:8883"
+    environment:
+      MQTT_TLS: "true"
+      MQTT_LEFT_PASSWORD: ${MQTT_LEFT_PASSWORD:?MQTT_LEFT_PASSWORD is required}
+      MQTT_RIGHT_PASSWORD: ${MQTT_RIGHT_PASSWORD:?MQTT_RIGHT_PASSWORD is required}
+      MQTT_BACKEND_PASSWORD: ${MQTT_BACKEND_PASSWORD:?MQTT_BACKEND_PASSWORD is required}
+    volumes:
+      - ./deploy/mosquitto:/mosquitto/config:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - mosquitto-data:/mosquitto/data
+    command: ["/bin/sh", "/mosquitto/config/start.sh"]
+    networks:
+      default:
+        aliases:
+          - mqtt-broker
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mosquitto_sub --insecure -h 127.0.0.1 -p 8883 --cafile /etc/letsencrypt/live/${SSL_DOMAIN}/fullchain.pem -u railtwin-backend -P \"$$MQTT_BACKEND_PASSWORD\" -t '$$SYS/broker/version' -C 1 -W 5",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   railtwin:
     build: .
     container_name: railtwin-api
@@ -28,8 +54,15 @@ services:
       RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
       DEVICE_ID: ${DEVICE_ID:-rail-sensor}
       DEMO_MODE: ${DEMO_MODE:-true}
-      SENSOR_AUTH_TOKEN: ${SENSOR_AUTH_TOKEN:-}
-      SENSOR_WS_MAX_MESSAGE_BYTES: ${SENSOR_WS_MAX_MESSAGE_BYTES:-65536}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-8883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-railtwin-backend}
+      MQTT_PASSWORD: ${MQTT_BACKEND_PASSWORD:?MQTT_BACKEND_PASSWORD is required}
+      MQTT_TLS: ${MQTT_TLS:-true}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-railtwin-backend}
+      MQTT_TOPIC_PREFIX: ${MQTT_TOPIC_PREFIX:-rail/v1/nodes}
+      MQTT_KEEPALIVE_SECONDS: ${MQTT_KEEPALIVE_SECONDS:-30}
+      MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
     command:
       - uvicorn
       - main:app
@@ -38,10 +71,13 @@ services:
       - --port
       - "443"
       - --ssl-certfile
-      - /etc/letsencrypt/live/hp028-railtwin.duckdns.org/fullchain.pem
+      - /etc/letsencrypt/live/${SSL_DOMAIN}/fullchain.pem
       - --ssl-keyfile
-      - /etc/letsencrypt/live/hp028-railtwin.duckdns.org/privkey.pem
+      - /etc/letsencrypt/live/${SSL_DOMAIN}/privkey.pem
     restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -54,3 +90,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+volumes:
+  mosquitto-data:
