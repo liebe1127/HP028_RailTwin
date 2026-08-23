@@ -51,8 +51,9 @@ from ml.train_rbf_surrogate import (
     FEATURE_NAMES,
     WINDOW_LEN,
     RBFSurrogateModel,
-    accel_dynamic_magnitude,
-    compute_crest_from_window,
+    dynamic_accel_magnitude,
+    extract_engineered_features,
+    gyro_magnitude,
 )
 from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_batch
 
@@ -187,7 +188,7 @@ def sensor_authorized(ws: WebSocket) -> bool:
 # ─────────────────────────────────────────────
 #  AI 추론: PyTorch RBF 레일 변형 대리 모델
 #  모델 정의는 ml/train_rbf_surrogate.py (centers=64, output_dim=1).
-#  입력 11차원 = 센서 10개 + CREST. 출력은 하부 레일 변형 스칼라.
+#  입력은 MPU6050·LR18·엔코더 롤링 윈도우의 특징 공학 결과다.
 #  (거더 처짐 계수·PRED_DEFLECTION 을 쓰지 않음)
 # ─────────────────────────────────────────────
 ml_state: dict = {
@@ -199,9 +200,15 @@ ml_state: dict = {
     "y_std": None,
 }
 
-# 좌/우 레일 각각 웨이블릿·파고율용 가속도 롤링 윈도우
-accel_windows: dict[str, deque[float]] = {
-    side: deque(maxlen=WINDOW_LEN) for side in RAIL_SIDES
+# 좌/우 레일별 특징 공학 롤링 윈도우
+feature_windows: dict[str, dict[str, deque]] = {
+    side: {
+        "accel": deque(maxlen=WINDOW_LEN),
+        "gyro": deque(maxlen=WINDOW_LEN),
+        "distance": deque(maxlen=WINDOW_LEN),
+        "position_time": deque(maxlen=2),
+    }
+    for side in RAIL_SIDES
 }
 
 
@@ -222,6 +229,14 @@ def load_rbf_model(path: str) -> None:
     try:
         device = get_inference_device()
         checkpoint = torch.load(path, map_location=device, weights_only=False)
+        if checkpoint.get("model_contract_version") != 2:
+            raise ValueError("현재 센서용 model_contract_version=2 모델이 아닙니다.")
+        checkpoint_features = checkpoint.get("feature_names")
+        if checkpoint_features != FEATURE_NAMES:
+            raise ValueError(
+                "모델 feature_names가 현재 센서 계약과 다릅니다. "
+                "ml/train_rbf_surrogate.py로 다시 학습하세요."
+            )
 
         model = RBFSurrogateModel(
             input_dim=checkpoint["input_dim"],
@@ -247,59 +262,65 @@ def load_rbf_model(path: str) -> None:
         ml_state["model"] = None
 
 
-def extract_crest_feature(data: dict, side: str = "left") -> float:
-    """
-    가속도 창에 sym3 웨이블릿 디노이징을 적용한 뒤 파고율(Peak/RMS)을 계산한다.
-
-    창 우선순위:
-      1) accel_array 가 있으면 그 배열 (엣지가 윈도우를 보낼 때)
-      2) 아니면 ADXL+MPU 동적 진폭을 해당 레일 롤링 윈도우(WINDOW_LEN)에 적재
-    시연 더미의 `_demo_crest_target` 이 있으면 그 값을 반환한다
-    (40~50cm 단차 충격에서 CREST≥5.0 재현).
-    """
-    window = accel_windows.setdefault(side, deque(maxlen=WINDOW_LEN))
-    mag = accel_dynamic_magnitude(
-        float(data.get("AAX") or 0.0),
-        float(data.get("AAY") or 0.0),
-        float(data.get("AAZ") or 9.8),
-        float(data.get("MAX") or 0.0),
-        float(data.get("MAY") or 0.0),
-        float(data.get("MAZ") or 9.8),
-    )
-    window.append(mag)
-
-    raw_window = data.get("accel_array")
-    if raw_window is not None:
-        window_arr = np.asarray(raw_window, dtype=np.float64).ravel()
-    else:
-        window_arr = np.asarray(window, dtype=np.float64)
-
-    crest = compute_crest_from_window(window_arr) if window_arr.size else 0.0
-
-    demo_target = data.get("_demo_crest_target")
-    if demo_target is not None:
-        return float(demo_target)
-    return crest
-
-
 def preprocess_and_extract_features(
     data: dict, side: str = "left"
 ) -> tuple[list[float | None], float]:
     """
-    원시 센서를 모델에 직입력하지 않는다.
-    FEATURE_NAMES 순서의 11차원 벡터를 만들고, CREST만 웨이블릿 특징이다.
-
-      [AAX, AAY, AAZ, DIST, MAX, MAY, MAZ, GX, GY, GZ, CREST]
+    MPU6050·LR18·엔코더 원시값을 롤링 창에 적재하고,
+    웨이블릿·RMS·peak-to-peak·파고율·거리 변화·속도 특징을 만든다.
     """
-    crest = extract_crest_feature(data, side)
-    values: list[float | None] = []
-    for key in FEATURE_NAMES:
-        if key == "CREST":
-            values.append(float(crest))
-            continue
-        val = data.get(key)
-        values.append(None if val is None else float(val))
-    return values, float(crest)
+    windows = feature_windows.setdefault(
+        side,
+        {
+            "accel": deque(maxlen=WINDOW_LEN),
+            "gyro": deque(maxlen=WINDOW_LEN),
+            "distance": deque(maxlen=WINDOW_LEN),
+            "position_time": deque(maxlen=2),
+        },
+    )
+
+    accel_values = [data.get(key) for key in ("accel_x", "accel_y", "accel_z")]
+    if all(isinstance(value, (int, float)) for value in accel_values):
+        windows["accel"].append(
+            dynamic_accel_magnitude(*(float(value) for value in accel_values))
+        )
+
+    gyro_values = [data.get(key) for key in ("gyro_x", "gyro_y", "gyro_z")]
+    if all(isinstance(value, (int, float)) for value in gyro_values):
+        windows["gyro"].append(
+            gyro_magnitude(*(float(value) for value in gyro_values))
+        )
+
+    sensor_distance = data.get("sensor_distance_mm")
+    if isinstance(sensor_distance, (int, float)):
+        windows["distance"].append(float(sensor_distance))
+
+    position = data.get("position_mm")
+    received_at = data.get("_received_at")
+    if isinstance(position, (int, float)) and isinstance(
+        received_at, (int, float)
+    ):
+        windows["position_time"].append((float(position), float(received_at)))
+
+    speed_mm_s = 0.0
+    if len(windows["position_time"]) == 2:
+        previous, current = windows["position_time"]
+        elapsed = current[1] - previous[1]
+        if elapsed > 0.0:
+            speed_mm_s = abs(current[0] - previous[0]) / elapsed
+
+    features = extract_engineered_features(
+        np.asarray(windows["accel"], dtype=np.float64),
+        np.asarray(windows["gyro"], dtype=np.float64),
+        np.asarray(windows["distance"], dtype=np.float64),
+        speed_mm_s,
+    )
+    crest_index = FEATURE_NAMES.index("crest_factor")
+    demo_target = data.get("_demo_crest_target")
+    if demo_target is not None:
+        features[crest_index] = float(demo_target)
+    crest = features[crest_index]
+    return features, float(crest or 0.0)
 
 
 def normalize_risk(pred_rail_deform: float | None, crest: float | None) -> float:
@@ -351,7 +372,7 @@ def predict_rail_deform(
     data: dict, side: str = "left"
 ) -> tuple[float | None, float | None]:
     """
-    특징 공학(11차원) → RBF → 하부 주행 레일 변형 지표(스칼라).
+    특징 공학 → RBF → 하부 주행 레일 변형 지표(스칼라).
 
     Returns:
         (pred_rail_deform, crest) — 실패 시 해당 값은 None
@@ -634,7 +655,13 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                     logger.error("InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc)
 
                 risk = normalize_risk(pred_rail_deform, crest)
-                rail_risk = update_rail_risk(sample.get("DIST"), risk, side)
+                position_mm = sample.get("position_mm")
+                position_cm = (
+                    float(position_mm) / 10.0
+                    if isinstance(position_mm, (int, float))
+                    else None
+                )
+                rail_risk = update_rail_risk(position_cm, risk, side)
                 ws_payload[side] = build_side_ws_payload(
                     sample,
                     side=side,
