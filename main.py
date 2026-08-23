@@ -45,7 +45,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
-from influxdb_client import Point
+from influxdb_client import Point, WritePrecision
 
 from ml.train_rbf_surrogate import (
     FEATURE_NAMES,
@@ -320,6 +320,7 @@ def preprocess_and_extract_features(
     if demo_target is not None:
         features[crest_index] = float(demo_target)
     crest = features[crest_index]
+    data["_engineered_features"] = dict(zip(FEATURE_NAMES, features))
     return features, float(crest or 0.0)
 
 
@@ -599,6 +600,75 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     logger.info("더미 스트리머 종료")
 
 
+def build_influx_point(
+    sample: dict,
+    *,
+    side: str,
+    source: str,
+    pred_rail_deform: float | None,
+    crest: float | None,
+) -> Point:
+    """현재 센서 계약과 특징 공학 결과를 InfluxDB Point로 변환한다."""
+    device_id = str(sample.get("device_id") or f"{DEVICE_ID}-{side}")
+    point = (
+        Point(MEASUREMENT)
+        .tag("device_id", device_id)
+        .tag("rail_side", side)
+        .tag("source", source)
+    )
+    firmware_version = sample.get("firmware_version")
+    if firmware_version:
+        point = point.tag("firmware_version", str(firmware_version))
+
+    float_fields = {
+        "position_mm": "position_mm",
+        "sensor_distance_mm": "sensor_distance_mm",
+        "adc_voltage_v": "adc_voltage_v",
+        "sensor_voltage_v": "sensor_voltage_v",
+        "accel_x": "mpu_accel_x",
+        "accel_y": "mpu_accel_y",
+        "accel_z": "mpu_accel_z",
+        "gyro_x": "mpu_gyro_x",
+        "gyro_y": "mpu_gyro_y",
+        "gyro_z": "mpu_gyro_z",
+    }
+    integer_fields = {
+        "adc_raw": "adc_raw",
+        "sample_seq": "sample_seq",
+        "uptime_us": "uptime_us",
+        "batch_seq": "batch_seq",
+        "dropped_batches": "dropped_batches",
+    }
+    for sensor_key, influx_field in float_fields.items():
+        value = sample.get(sensor_key)
+        if isinstance(value, (int, float)):
+            point = point.field(influx_field, float(value))
+    for sensor_key, influx_field in integer_fields.items():
+        value = sample.get(sensor_key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            point = point.field(influx_field, value)
+
+    engineered = sample.get("_engineered_features")
+    if isinstance(engineered, dict):
+        for feature_name in FEATURE_NAMES:
+            value = engineered.get(feature_name)
+            if isinstance(value, (int, float)):
+                point = point.field(f"feature_{feature_name}", float(value))
+
+    if pred_rail_deform is not None:
+        point = point.field("pred_rail_deform", float(pred_rail_deform))
+    if crest is not None:
+        point = point.field("crest_factor", float(crest))
+
+    received_at = sample.get("_received_at")
+    if isinstance(received_at, (int, float)) and received_at > 0:
+        point = point.time(
+            int(float(received_at) * 1_000_000_000),
+            WritePrecision.NS,
+        )
+    return point
+
+
 # ─────────────────────────────────────────────
 #  Consumer Task: 큐에서 꺼내기 → InfluxDB 저장
 # ─────────────────────────────────────────────
@@ -625,28 +695,14 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
             ws_payload: dict = {"source": source}
 
             for side, sample in samples.items():
-                point = (
-                    Point(MEASUREMENT)
-                    .tag("device_id", f"{DEVICE_ID}-{side}")
-                    .tag("rail_side", side)
-                )
-
-                field_map = {
-                    "AAX": "adxl_accel_x", "AAY": "adxl_accel_y", "AAZ": "adxl_accel_z",
-                    "DIST": "distance_cm",
-                    "MAX": "mpu_accel_x", "MAY": "mpu_accel_y", "MAZ": "mpu_accel_z",
-                    "GX": "mpu_gyro_x", "GY": "mpu_gyro_y", "GZ": "mpu_gyro_z",
-                }
-                for sensor_key, influx_field in field_map.items():
-                    val = sample.get(sensor_key)
-                    if val is not None:
-                        point = point.field(influx_field, float(val))
-
                 pred_rail_deform, crest = predict_rail_deform(sample, side)
-                if pred_rail_deform is not None:
-                    point = point.field("pred_rail_deform", pred_rail_deform)
-                if crest is not None:
-                    point = point.field("crest_factor", float(crest))
+                point = build_influx_point(
+                    sample,
+                    side=side,
+                    source=source,
+                    pred_rail_deform=pred_rail_deform,
+                    crest=crest,
+                )
 
                 try:
                     await write_api.write(bucket=INFLUX_BUCKET, record=point)
