@@ -54,6 +54,7 @@ from ml.train_rbf_surrogate import (
     accel_dynamic_magnitude,
     compute_crest_from_window,
 )
+from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_batch
 
 # ─────────────────────────────────────────────
 #  환경 변수 로드 (.env 파일 우선, 없으면 shell 환경변수 사용)
@@ -76,7 +77,6 @@ INFLUX_TOKEN: str = os.getenv("INFLUX_TOKEN", "")
 INFLUX_ORG: str = os.getenv("INFLUX_ORG", "")
 INFLUX_BUCKET: str = os.getenv("INFLUX_BUCKET", "crane_data")
 DEVICE_ID: str = os.getenv("DEVICE_ID", "rail-sensor")
-RAIL_SIDES: tuple[str, ...] = ("left", "right")
 
 MEASUREMENT = "crane_sensor"
 QUEUE_MAX_SIZE = 100  # 큐 최대 적재 수 (초과 시 가장 오래된 항목 드롭)
@@ -182,77 +182,6 @@ def sensor_authorized(ws: WebSocket) -> bool:
     return scheme.lower() == "bearer" and hmac.compare_digest(
         token.strip(), SENSOR_AUTH_TOKEN
     )
-
-
-def validate_sensor_batch(payload: object) -> tuple[dict | None, str | None]:
-    """WebSocket 업링크의 최소 envelope를 검증한다."""
-    if not isinstance(payload, dict):
-        return None, "payload must be a JSON object"
-    if payload.get("type") != "sensor_batch":
-        return None, "type must be sensor_batch"
-    if payload.get("schema_version") != 1:
-        return None, "unsupported schema_version"
-
-    device_id = payload.get("device_id")
-    rail_side = payload.get("rail_side")
-    batch_seq = payload.get("batch_seq")
-    samples = payload.get("samples")
-    if not isinstance(device_id, str) or not device_id.strip():
-        return None, "device_id is required"
-    if rail_side not in RAIL_SIDES:
-        return None, f"rail_side must be one of {RAIL_SIDES}"
-    if not isinstance(batch_seq, int) or batch_seq < 0:
-        return None, "batch_seq must be a non-negative integer"
-    if not isinstance(samples, list) or not samples:
-        return None, "samples must be a non-empty array"
-    return payload, None
-
-
-def legacy_samples_from_sensor_batch(batch: dict, received_at: float) -> list[dict]:
-    """
-    새 WebSocket 수집 경로를 기존 Consumer에 임시 연결한다.
-    현재 센서의 최종 표준 계약은 다음 단계에서 적용한다.
-    """
-    side = str(batch["rail_side"])
-    normalized: list[dict] = []
-    for raw_sample in batch["samples"]:
-        if not isinstance(raw_sample, dict):
-            continue
-        acceleration = raw_sample.get("accel_mps2")
-        gyro = raw_sample.get("gyro_radps")
-        if not (
-            isinstance(acceleration, list)
-            and len(acceleration) == 3
-            and isinstance(gyro, list)
-            and len(gyro) == 3
-        ):
-            continue
-
-        position_mm = raw_sample.get("position_mm")
-        position_cm = (
-            float(position_mm) / 10.0
-            if isinstance(position_mm, (int, float))
-            else None
-        )
-        sample = {
-            "AAX": acceleration[0],
-            "AAY": acceleration[1],
-            "AAZ": acceleration[2],
-            "DIST": position_cm,
-            "MAX": acceleration[0],
-            "MAY": acceleration[1],
-            "MAZ": acceleration[2],
-            "GX": gyro[0],
-            "GY": gyro[1],
-            "GZ": gyro[2],
-            "_received_at": received_at,
-            "_device_id": batch["device_id"],
-            "_rail_side": side,
-            "_batch_seq": batch["batch_seq"],
-            "_sample_seq": raw_sample.get("sample_seq"),
-        }
-        normalized.append({"source": "websocket", side: sample})
-    return normalized
 
 
 # ─────────────────────────────────────────────
@@ -537,45 +466,55 @@ def generate_crane_demo_sample(distance_x: float) -> dict:
         roll_deg = float(np.random.uniform(-10.0, 10.0) * max(impact, 0.4))
         pitch_deg = float(np.random.uniform(-10.0, 10.0) * max(impact, 0.4))
 
-        aax = float(np.sin(np.radians(roll_deg)) * G_MS2 + np.random.normal(0.0, 0.05))
-        aay = float(np.sin(np.radians(pitch_deg)) * G_MS2 + np.random.normal(0.0, 0.05))
-        aaz = float(9.8 + peak_g * G_MS2 + np.random.normal(0.0, 0.1))
-
-        max_ = aax + float(np.random.normal(0.0, 0.08))
-        may = aay + float(np.random.normal(0.0, 0.08))
-        maz = aaz + float(np.random.normal(0.0, 0.08))
+        accel_x = float(
+            np.sin(np.radians(roll_deg)) * G_MS2
+            + np.random.normal(0.0, 0.05)
+        )
+        accel_y = float(
+            np.sin(np.radians(pitch_deg)) * G_MS2
+            + np.random.normal(0.0, 0.05)
+        )
+        accel_z = float(
+            9.8 + peak_g * G_MS2 + np.random.normal(0.0, 0.1)
+        )
 
         gx = float(np.radians(roll_deg) + np.random.normal(0.0, 0.02))
         gy = float(np.radians(pitch_deg) + np.random.normal(0.0, 0.02))
         gz = float(np.random.normal(0.0, 0.05))
+        sensor_distance_mm = float(
+            4.0 + 0.8 * impact + np.random.normal(0.0, 0.02)
+        )
 
         # 위험 임계치 5.0 이상으로 치솟도록 시연용 파고율 지정
         demo_crest = float(5.0 + 3.0 * impact + np.random.uniform(0.0, 1.0))
     else:
         # 정상 주행: 거의 0에 가까운 미세 가우시안 노이즈
-        aax = float(np.random.normal(0.0, 0.005))
-        aay = float(np.random.normal(0.0, 0.005))
-        aaz = float(9.8 + np.random.normal(0.0, 0.005))
-        max_ = float(np.random.normal(0.0, 0.005))
-        may = float(np.random.normal(0.0, 0.005))
-        maz = float(9.8 + np.random.normal(0.0, 0.005))
+        accel_x = float(np.random.normal(0.0, 0.005))
+        accel_y = float(np.random.normal(0.0, 0.005))
+        accel_z = float(9.8 + np.random.normal(0.0, 0.005))
         gx = float(np.random.normal(0.0, 0.005))
         gy = float(np.random.normal(0.0, 0.005))
         gz = float(np.random.normal(0.0, 0.005))
+        sensor_distance_mm = float(4.0 + np.random.normal(0.0, 0.01))
         # 정상 범위 파고율 1.0~1.5
         demo_crest = float(np.random.uniform(1.05, 1.45))
 
+    sensor_voltage_v = float(
+        np.clip((sensor_distance_mm - 1.0) / 7.0 * 10.0, 0.0, 10.0)
+    )
+    adc_voltage_v = sensor_voltage_v * (68_000.0 / 538_000.0)
     return {
-        "AAX": aax,
-        "AAY": aay,
-        "AAZ": aaz,
-        "DIST": float(distance_x),
-        "MAX": max_,
-        "MAY": may,
-        "MAZ": maz,
-        "GX": gx,
-        "GY": gy,
-        "GZ": gz,
+        "position_mm": float(distance_x) * 10.0,
+        "sensor_distance_mm": sensor_distance_mm,
+        "adc_raw": int(np.clip(adc_voltage_v / 4.096 * 32768.0, 0, 32767)),
+        "adc_voltage_v": adc_voltage_v,
+        "sensor_voltage_v": sensor_voltage_v,
+        "accel_x": accel_x,
+        "accel_y": accel_y,
+        "accel_z": accel_z,
+        "gyro_x": gx,
+        "gyro_y": gy,
+        "gyro_z": gz,
         "_demo_crest_target": demo_crest,
         "_source": "demo",
     }
@@ -598,13 +537,25 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     )
 
     distance_x = 0.0
+    sample_seq = 1
 
     while not stop_event.is_set():
         ts = time.time()
         left = generate_crane_demo_sample(distance_x)
         right = generate_crane_demo_sample(distance_x)
-        left["_received_at"] = ts
-        right["_received_at"] = ts
+        for side, sample in (("left", left), ("right", right)):
+            sample.update(
+                {
+                    "_received_at": ts,
+                    "sample_seq": sample_seq,
+                    "uptime_us": int(ts * 1_000_000),
+                    "device_id": f"demo-{side}",
+                    "rail_side": side,
+                    "batch_seq": sample_seq,
+                    "dropped_batches": 0,
+                    "firmware_version": "demo",
+                }
+            )
 
         await enqueue_sensor_item({"left": left, "right": right, "source": "demo"})
 
@@ -620,6 +571,7 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
         distance_x += 1.0
         if distance_x > DEMO_RAIL_LENGTH_CM:
             distance_x = 0.0
+        sample_seq += 1
 
         await asyncio.sleep(DEMO_HZ_INTERVAL)
 
@@ -834,13 +786,20 @@ async def sensor_websocket_endpoint(ws: WebSocket):
                 )
                 continue
 
-            batch, error = validate_sensor_batch(message)
-            if error is not None or batch is None:
+            received_at = time.time()
+            try:
+                queue_items = normalize_sensor_batch(message, received_at)
+            except SensorContractError as exc:
                 await ws.send_json(
-                    {"type": "error", "code": "invalid_sensor_batch", "detail": error}
+                    {
+                        "type": "error",
+                        "code": "invalid_sensor_batch",
+                        "detail": str(exc),
+                    }
                 )
                 continue
 
+            batch = message
             key = (str(batch["device_id"]), str(batch["rail_side"]))
             batch_seq = int(batch["batch_seq"])
             last_seq = sensor_last_batch_seq.get(key, -1)
@@ -850,18 +809,6 @@ async def sensor_websocket_endpoint(ws: WebSocket):
                         "type": "ack",
                         "batch_seq": batch_seq,
                         "duplicate": True,
-                    }
-                )
-                continue
-
-            received_at = time.time()
-            queue_items = legacy_samples_from_sensor_batch(batch, received_at)
-            if not queue_items:
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "code": "no_valid_samples",
-                        "batch_seq": batch_seq,
                     }
                 )
                 continue
