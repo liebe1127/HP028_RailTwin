@@ -4,9 +4,10 @@ main.py
 주행 진동·가속도 수집 → 특징 공학 → RBF로 하부 레일 변형(단차·침하·뒤틀림) 지표 추론
 
 아키텍처:
-  [ESP32-S3] --serial--> [Producer Task] --asyncio.Queue--> [Consumer Task] --> [InfluxDB]
-       or                                                                  --> [RBF 레일 변형 추론]
-  [더미 스트리머]                                                            --> [left/right rail_risk] --> [WebSocket /ws]
+  [ESP32-C3] --WiFi WebSocket /ws/sensor--> [asyncio.Queue] --> [Consumer Task] --> [InfluxDB]
+  [더미 스트리머] --------------------------------------------->            --> [RBF 레일 변형 추론]
+                                                                                --> [left/right rail_risk]
+                                                                                --> [WebSocket /ws]
 
 실행:
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -16,8 +17,8 @@ WebSocket 테스트:
   # 또는 브라우저 콘솔: new WebSocket("ws://localhost:8000/ws")
 
 환경 변수 (.env 파일 또는 shell export):
-  SERIAL_PORT      /dev/cu.usbmodem1101
-  BAUD_RATE        115200
+  SENSOR_AUTH_TOKEN sensor-uplink-bearer-token
+  DEMO_MODE         true|false
   INFLUX_URL       http://localhost:8086
   INFLUX_TOKEN     your-influxdb-token
   INFLUX_ORG       your-org
@@ -29,6 +30,7 @@ WebSocket 테스트:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -38,7 +40,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
-import serial
 import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -59,18 +60,22 @@ from ml.train_rbf_surrogate import (
 # ─────────────────────────────────────────────
 load_dotenv()
 
-SERIAL_PORT: str = os.getenv("SERIAL_PORT", "/dev/cu.usbmodem1101")
-BAUD_RATE: int = int(os.getenv("BAUD_RATE", "115200"))
-READ_TIMEOUT: float = 2.0
-RECONNECT_DELAY: float = 3.0
+SENSOR_AUTH_TOKEN: str = os.getenv("SENSOR_AUTH_TOKEN", "")
+SENSOR_WS_MAX_MESSAGE_BYTES: int = int(
+    os.getenv("SENSOR_WS_MAX_MESSAGE_BYTES", "65536")
+)
+DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 INFLUX_URL: str = os.getenv("INFLUX_URL", "http://localhost:8086")
 INFLUX_TOKEN: str = os.getenv("INFLUX_TOKEN", "")
 INFLUX_ORG: str = os.getenv("INFLUX_ORG", "")
 INFLUX_BUCKET: str = os.getenv("INFLUX_BUCKET", "crane_data")
-DEVICE_ID: str = os.getenv("DEVICE_ID", "esp32-s3")
-# 시리얼 ESP32가 한쪽만 있을 때 매핑할 레일 (다른 쪽은 시연 더미)
-SERIAL_RAIL_SIDE: str = os.getenv("SERIAL_RAIL_SIDE", "left").strip().lower()
+DEVICE_ID: str = os.getenv("DEVICE_ID", "rail-sensor")
 RAIL_SIDES: tuple[str, ...] = ("left", "right")
 
 MEASUREMENT = "crane_sensor"
@@ -164,58 +169,90 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
+sensor_ws_clients = 0
+sensor_last_batch_seq: dict[tuple[str, str], int] = {}
 
 
-# ─────────────────────────────────────────────
-#  유틸리티: 시리얼 포트 열기
-# ─────────────────────────────────────────────
-def open_serial(port: str, baud: int, timeout: float) -> serial.Serial:
-    return serial.Serial(
-        port=port,
-        baudrate=baud,
-        bytesize=serial.EIGHTBITS,
-        parity=serial.PARITY_NONE,
-        stopbits=serial.STOPBITS_ONE,
-        timeout=timeout,
+def sensor_authorized(ws: WebSocket) -> bool:
+    """설정된 센서 토큰이 있으면 Authorization Bearer 값을 검증한다."""
+    if not SENSOR_AUTH_TOKEN:
+        return True
+    authorization = ws.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    return scheme.lower() == "bearer" and hmac.compare_digest(
+        token.strip(), SENSOR_AUTH_TOKEN
     )
 
 
-# ─────────────────────────────────────────────
-#  유틸리티: 센서 라인 파싱
-#  입력 예시:
-#    "AAX:0.12,AAY:-0.05,AAZ:9.81,DIST:23.45,MAX:0.01,MAY:-0.02,MAZ:9.80,GX:0.5,GY:1.2,GZ:-0.3"
-#  반환: {"AAX": 0.12, ..., "DIST": 23.45, "MAX": 0.01, ..., "GZ": -0.3}
-#        ERR 이거나 숫자 변환 실패 시 해당 키의 값은 None
-#
-#  AA* : ADXL345 가속도 (m/s²) | DIST : HC-SR04 거리 (cm)
-#  MA* : MPU-6050 가속도 (m/s²) | G*  : MPU-6050 자이로 (rad/s)
-# ─────────────────────────────────────────────
-EXPECTED_KEYS = {"AAX", "AAY", "AAZ", "DIST", "MAX", "MAY", "MAZ", "GX", "GY", "GZ"}
+def validate_sensor_batch(payload: object) -> tuple[dict | None, str | None]:
+    """WebSocket 업링크의 최소 envelope를 검증한다."""
+    if not isinstance(payload, dict):
+        return None, "payload must be a JSON object"
+    if payload.get("type") != "sensor_batch":
+        return None, "type must be sensor_batch"
+    if payload.get("schema_version") != 1:
+        return None, "unsupported schema_version"
+
+    device_id = payload.get("device_id")
+    rail_side = payload.get("rail_side")
+    batch_seq = payload.get("batch_seq")
+    samples = payload.get("samples")
+    if not isinstance(device_id, str) or not device_id.strip():
+        return None, "device_id is required"
+    if rail_side not in RAIL_SIDES:
+        return None, f"rail_side must be one of {RAIL_SIDES}"
+    if not isinstance(batch_seq, int) or batch_seq < 0:
+        return None, "batch_seq must be a non-negative integer"
+    if not isinstance(samples, list) or not samples:
+        return None, "samples must be a non-empty array"
+    return payload, None
 
 
-def parse_sensor_line(raw_line: str) -> dict | None:
-    if not raw_line:
-        return None
-
-    fields: dict = {}
-    for token in raw_line.split(","):
-        key, sep, value = token.partition(":")
-        key = key.strip()
-        value = value.strip()
-
-        if not sep or key not in EXPECTED_KEYS:
-            continue  # 콜론 누락 또는 알 수 없는 키는 건너뜀
-
-        if value == "ERR" or value == "":
-            fields[key] = None
+def legacy_samples_from_sensor_batch(batch: dict, received_at: float) -> list[dict]:
+    """
+    새 WebSocket 수집 경로를 기존 Consumer에 임시 연결한다.
+    현재 센서의 최종 표준 계약은 다음 단계에서 적용한다.
+    """
+    side = str(batch["rail_side"])
+    normalized: list[dict] = []
+    for raw_sample in batch["samples"]:
+        if not isinstance(raw_sample, dict):
+            continue
+        acceleration = raw_sample.get("accel_mps2")
+        gyro = raw_sample.get("gyro_radps")
+        if not (
+            isinstance(acceleration, list)
+            and len(acceleration) == 3
+            and isinstance(gyro, list)
+            and len(gyro) == 3
+        ):
             continue
 
-        try:
-            fields[key] = float(value)
-        except ValueError:
-            fields[key] = None  # 필드 단위로만 무효 처리, 라인 전체는 버리지 않음
-
-    return fields if fields else None
+        position_mm = raw_sample.get("position_mm")
+        position_cm = (
+            float(position_mm) / 10.0
+            if isinstance(position_mm, (int, float))
+            else None
+        )
+        sample = {
+            "AAX": acceleration[0],
+            "AAY": acceleration[1],
+            "AAZ": acceleration[2],
+            "DIST": position_cm,
+            "MAX": acceleration[0],
+            "MAY": acceleration[1],
+            "MAZ": acceleration[2],
+            "GX": gyro[0],
+            "GY": gyro[1],
+            "GZ": gyro[2],
+            "_received_at": received_at,
+            "_device_id": batch["device_id"],
+            "_rail_side": side,
+            "_batch_seq": batch["batch_seq"],
+            "_sample_seq": raw_sample.get("sample_seq"),
+        }
+        normalized.append({"source": "websocket", side: sample})
+    return normalized
 
 
 # ─────────────────────────────────────────────
@@ -428,7 +465,7 @@ def predict_rail_deform(
 
 def split_rail_samples(data: dict) -> tuple[str, dict[str, dict]]:
     """큐 항목에서 좌/우 레일 샘플과 source 를 꺼낸다. 구 평면 페이로드는 양쪽에 복제."""
-    source = str(data.get("source") or data.get("_source") or "serial")
+    source = str(data.get("source") or data.get("_source") or "websocket")
     samples: dict[str, dict] = {}
     for side in RAIL_SIDES:
         sample = data.get(side)
@@ -478,19 +515,6 @@ async def enqueue_sensor_item(item: dict) -> None:
         except asyncio.QueueEmpty:
             pass
     await sensor_queue.put(item)
-
-
-# ─────────────────────────────────────────────
-#  시리얼 포트 사용 가능 여부 확인
-# ─────────────────────────────────────────────
-def serial_port_available(port: str) -> bool:
-    """실제 ESP32가 연결되어 포트를 열 수 있으면 True."""
-    try:
-        ser = open_serial(port, BAUD_RATE, READ_TIMEOUT)
-        ser.close()
-        return True
-    except Exception:
-        return False
 
 
 # ─────────────────────────────────────────────
@@ -603,78 +627,6 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
 
 
 # ─────────────────────────────────────────────
-#  Producer Task: 시리얼 읽기 → 큐에 적재
-#  readline()은 블로킹 I/O이므로 asyncio.to_thread로 감쌈
-# ─────────────────────────────────────────────
-async def serial_producer(stop_event: asyncio.Event) -> None:
-    logger.info("Producer 시작: 포트=%s, 보드레이트=%d", SERIAL_PORT, BAUD_RATE)
-    ser: serial.Serial | None = None
-
-    while not stop_event.is_set():
-        # ── 포트 열기 (실패 시 재시도) ──
-        if ser is None or not ser.is_open:
-            try:
-                ser = await asyncio.to_thread(open_serial, SERIAL_PORT, BAUD_RATE, READ_TIMEOUT)
-                logger.info("시리얼 포트 연결 성공: %s", SERIAL_PORT)
-            except serial.SerialException as exc:
-                logger.error("포트 열기 실패: %s — %s초 후 재시도", exc, RECONNECT_DELAY)
-                await asyncio.sleep(RECONNECT_DELAY)
-                continue
-
-        # ── 1줄 읽기 (블로킹 → to_thread로 이벤트 루프 비블로킹) ──
-        try:
-            raw_bytes: bytes = await asyncio.to_thread(ser.readline)
-        except serial.SerialException as exc:
-            logger.warning("시리얼 통신 오류: %s — 재연결 시도", exc)
-            try:
-                ser.close()
-            except Exception:
-                pass
-            ser = None
-            await asyncio.sleep(RECONNECT_DELAY)
-            continue
-
-        if not raw_bytes:
-            logger.debug("수신 타임아웃 (ESP32 응답 없음)")
-            continue
-
-        try:
-            raw_line = raw_bytes.decode("utf-8", errors="replace").strip()
-        except Exception:
-            continue
-
-        if not raw_line:
-            continue
-
-        parsed = parse_sensor_line(raw_line)
-        if parsed is None:
-            logger.debug("파싱 실패 (건너뜀): %s", raw_line)
-            continue
-
-        parsed["_received_at"] = time.time()
-        logger.info("수신 → %s", raw_line)
-
-        dist = parsed.get("DIST")
-        other_side = "right" if SERIAL_RAIL_SIDE == "left" else "left"
-        other_sample = generate_crane_demo_sample(float(dist) if dist is not None else 0.0)
-        other_sample["_received_at"] = parsed["_received_at"]
-
-        item = {"source": "serial"}
-        if SERIAL_RAIL_SIDE in RAIL_SIDES:
-            item[SERIAL_RAIL_SIDE] = parsed
-            item[other_side] = other_sample
-        else:
-            item["left"] = parsed
-            item["right"] = other_sample
-        await enqueue_sensor_item(item)
-
-    # ── 종료 처리 ──
-    if ser and ser.is_open:
-        ser.close()
-        logger.info("시리얼 포트 정상 종료")
-
-
-# ─────────────────────────────────────────────
 #  Consumer Task: 큐에서 꺼내기 → InfluxDB 저장
 # ─────────────────────────────────────────────
 async def influx_consumer(stop_event: asyncio.Event) -> None:
@@ -755,23 +707,20 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(load_rbf_model, RBF_MODEL_PATH)
 
     stop_event = asyncio.Event()
-
-    # 시리얼 포트가 없으면 시연용 더미 스트리머로 대체
-    port_ok = await asyncio.to_thread(serial_port_available, SERIAL_PORT)
-    if port_ok:
-        producer_task = asyncio.create_task(serial_producer(stop_event), name="serial-producer")
-        logger.info("시리얼 포트 감지 → 실제 ESP32 Producer 시작 (%s)", SERIAL_PORT)
-    else:
-        producer_task = asyncio.create_task(
-            dummy_sensor_streamer(stop_event), name="dummy-streamer"
+    tasks: list[asyncio.Task] = []
+    if DEMO_MODE:
+        tasks.append(
+            asyncio.create_task(
+                dummy_sensor_streamer(stop_event), name="dummy-streamer"
+            )
         )
-        logger.warning(
-            "시리얼 포트 미연결 (%s) → 1m 플라스틱 크레인 시연용 더미 스트리머 시작",
-            SERIAL_PORT,
-        )
-
+        logger.warning("DEMO_MODE=true → 시연용 더미 스트리머 시작")
     consumer_task = asyncio.create_task(influx_consumer(stop_event), name="influx-consumer")
-    logger.info("백그라운드 태스크 시작 (data-source=%s, Consumer)", producer_task.get_name())
+    tasks.append(consumer_task)
+    logger.info(
+        "백그라운드 태스크 시작 (demo_mode=%s, ESP32=/ws/sensor)",
+        DEMO_MODE,
+    )
 
     try:
         yield  # ← 서버 가동 중
@@ -779,7 +728,7 @@ async def lifespan(app: FastAPI):
         logger.info("서버 종료 요청 — 태스크 종료 대기 중...")
         stop_event.set()
 
-        await asyncio.gather(producer_task, consumer_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("모든 백그라운드 태스크 종료 완료")
 
 
@@ -789,7 +738,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Crane Rail Deformation API",
     description="갠트리 크레인 주행 진동 계측 및 하부 레일 변형(단차·침하·뒤틀림) 예측 서버",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -805,15 +754,15 @@ async def health_check():
     """서버 상태 및 큐 적재 현황을 반환합니다."""
     return {
         "status": "ok",
-        "serial_port": SERIAL_PORT,
         "influx_url": INFLUX_URL,
         "influx_bucket": INFLUX_BUCKET,
         "queue_size": sensor_queue.qsize(),
         "queue_max": QUEUE_MAX_SIZE,
         "ws_clients": ws_manager.client_count,
+        "sensor_ws_clients": sensor_ws_clients,
         "ai_model_loaded": ml_state.get("model") is not None,
         "ai_model_device": str(ml_state.get("device")) if ml_state.get("device") else None,
-        "demo_mode": not serial_port_available(SERIAL_PORT),
+        "demo_mode": DEMO_MODE,
     }
 
 
@@ -845,8 +794,95 @@ async def rail_risk_reset(side: str | None = None):
 
 # ─────────────────────────────────────────────
 #  WebSocket 엔드포인트
-#  클라이언트: ws://localhost:8000/ws
+#  센서 업링크: wss://host/ws/sensor
+#  화면 다운링크: wss://host/ws
 # ─────────────────────────────────────────────
+@app.websocket("/ws/sensor")
+async def sensor_websocket_endpoint(ws: WebSocket):
+    global sensor_ws_clients
+
+    if not sensor_authorized(ws):
+        await ws.close(code=1008, reason="invalid sensor token")
+        return
+
+    await ws.accept()
+    sensor_ws_clients += 1
+    logger.info("센서 WebSocket 연결: 현재 센서 수=%d", sensor_ws_clients)
+    try:
+        while True:
+            raw_message = await ws.receive_text()
+            if len(raw_message.encode("utf-8")) > SENSOR_WS_MAX_MESSAGE_BYTES:
+                await ws.send_json(
+                    {"type": "error", "code": "message_too_large"}
+                )
+                await ws.close(code=1009)
+                return
+
+            try:
+                message = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await ws.send_json({"type": "error", "code": "invalid_json"})
+                continue
+
+            if isinstance(message, dict) and message.get("type") == "hello":
+                await ws.send_json(
+                    {
+                        "type": "hello_ack",
+                        "schema_version": 1,
+                        "server_time_ms": int(time.time() * 1000),
+                    }
+                )
+                continue
+
+            batch, error = validate_sensor_batch(message)
+            if error is not None or batch is None:
+                await ws.send_json(
+                    {"type": "error", "code": "invalid_sensor_batch", "detail": error}
+                )
+                continue
+
+            key = (str(batch["device_id"]), str(batch["rail_side"]))
+            batch_seq = int(batch["batch_seq"])
+            last_seq = sensor_last_batch_seq.get(key, -1)
+            if batch_seq <= last_seq:
+                await ws.send_json(
+                    {
+                        "type": "ack",
+                        "batch_seq": batch_seq,
+                        "duplicate": True,
+                    }
+                )
+                continue
+
+            received_at = time.time()
+            queue_items = legacy_samples_from_sensor_batch(batch, received_at)
+            if not queue_items:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "no_valid_samples",
+                        "batch_seq": batch_seq,
+                    }
+                )
+                continue
+
+            for item in queue_items:
+                await sensor_queue.put(item)
+            sensor_last_batch_seq[key] = batch_seq
+            await ws.send_json(
+                {
+                    "type": "ack",
+                    "batch_seq": batch_seq,
+                    "accepted_samples": len(queue_items),
+                }
+            )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        sensor_ws_clients = max(0, sensor_ws_clients - 1)
+        logger.info("센서 WebSocket 해제: 현재 센서 수=%d", sensor_ws_clients)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws_manager.connect(ws)
