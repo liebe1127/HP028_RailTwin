@@ -15,13 +15,15 @@ services:
       - path: .env
         required: false
     environment:
-      # 클라우드에는 ESP32가 없으므로 demo 스트리머가 동작함
       RBF_MODEL_PATH: ${RBF_MODEL_PATH:-rbf_dummy_model.pth}
       RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-100}
       RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
-      DEVICE_ID: ${DEVICE_ID:-esp32-s3-cloud}
+      DEVICE_ID: ${DEVICE_ID:-rail-sensor}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      SENSOR_AUTH_TOKEN: ${SENSOR_AUTH_TOKEN:-}
+      SENSOR_WS_MAX_MESSAGE_BYTES: ${SENSOR_WS_MAX_MESSAGE_BYTES:-65536}
     restart: unless-stopped
-    # InfluxDB가 없어도 서버는 기동 (쓰기 실패는 로그만)
+    # InfluxDB 설정이 비어 있어도 서버·WebSocket은 동작
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
       interval: 30s

@@ -38,6 +38,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -77,6 +78,7 @@ INFLUX_URL: str = os.getenv("INFLUX_URL", "http://localhost:8086")
 INFLUX_TOKEN: str = os.getenv("INFLUX_TOKEN", "")
 INFLUX_ORG: str = os.getenv("INFLUX_ORG", "")
 INFLUX_BUCKET: str = os.getenv("INFLUX_BUCKET", "crane_data")
+INFLUX_WRITE_ENABLED: bool = bool(INFLUX_TOKEN and INFLUX_ORG)
 DEVICE_ID: str = os.getenv("DEVICE_ID", "rail-sensor")
 
 MEASUREMENT = "crane_sensor"
@@ -175,9 +177,9 @@ sensor_last_batch_seq: dict[tuple[str, str], int] = {}
 
 
 def sensor_authorized(ws: WebSocket) -> bool:
-    """설정된 센서 토큰이 있으면 Authorization Bearer 값을 검증한다."""
+    """필수 Authorization Bearer 센서 토큰을 상수 시간 비교로 검증한다."""
     if not SENSOR_AUTH_TOKEN:
-        return True
+        return False
     authorization = ws.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
     return scheme.lower() == "bearer" and hmac.compare_digest(
@@ -189,7 +191,6 @@ def sensor_authorized(ws: WebSocket) -> bool:
 #  AI 추론: PyTorch RBF 레일 변형 대리 모델
 #  모델 정의는 ml/train_rbf_surrogate.py (centers=64, output_dim=1).
 #  입력은 MPU6050·LR18·엔코더 롤링 윈도우의 특징 공학 결과다.
-#  (거더 처짐 계수·PRED_DEFLECTION 을 쓰지 않음)
 # ─────────────────────────────────────────────
 ml_state: dict = {
     "model": None,
@@ -690,6 +691,10 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
         "Consumer 시작: InfluxDB=%s  bucket=%s  org=%s",
         INFLUX_URL, INFLUX_BUCKET, INFLUX_ORG,
     )
+    if not INFLUX_WRITE_ENABLED:
+        logger.warning(
+            "INFLUX_TOKEN 또는 INFLUX_ORG가 없어 DB 쓰기를 비활성화합니다."
+        )
 
     async with InfluxDBClientAsync(
         url=INFLUX_URL,
@@ -717,11 +722,14 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                     crest=crest,
                 )
 
-                try:
-                    await write_api.write(bucket=INFLUX_BUCKET, record=point)
-                    logger.debug("InfluxDB 저장 완료 (%s)", side)
-                except Exception as exc:
-                    logger.error("InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc)
+                if INFLUX_WRITE_ENABLED:
+                    try:
+                        await write_api.write(bucket=INFLUX_BUCKET, record=point)
+                        logger.debug("InfluxDB 저장 완료 (%s)", side)
+                    except Exception as exc:
+                        logger.error(
+                            "InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc
+                        )
 
                 risk = normalize_risk(pred_rail_deform, crest)
                 position_mm = sample.get("position_mm")
@@ -804,10 +812,12 @@ async def health_check():
         "status": "ok",
         "influx_url": INFLUX_URL,
         "influx_bucket": INFLUX_BUCKET,
+        "influx_write_enabled": INFLUX_WRITE_ENABLED,
         "queue_size": sensor_queue.qsize(),
         "queue_max": QUEUE_MAX_SIZE,
         "ws_clients": ws_manager.client_count,
         "sensor_ws_clients": sensor_ws_clients,
+        "sensor_auth_configured": bool(SENSOR_AUTH_TOKEN),
         "ai_model_loaded": ml_state.get("model") is not None,
         "ai_model_device": str(ml_state.get("device")) if ml_state.get("device") else None,
         "demo_mode": DEMO_MODE,
@@ -828,7 +838,7 @@ async def dashboard():
 
 
 @app.post("/rail_risk/reset", summary="레일 구간 위험도 히트맵 초기화")
-async def rail_risk_reset(side: str | None = None):
+async def rail_risk_reset(side: Optional[str] = None):
     """
     max 누적된 rail_risk를 0으로 리셋한다.
     query: side=left|right (생략 시 양쪽)

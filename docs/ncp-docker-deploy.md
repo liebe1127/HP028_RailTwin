@@ -1,5 +1,5 @@
 # 네이버클라우드(NCP)에 RailTwin FastAPI를 Docker로 올리는 가이드
-# 팀원이 자기 PC Godot에서 `wss://hp028-railtwin.duckdns.org/ws` 로 접속하는 것이 목표입니다.
+# ESP32-C3는 `/ws/sensor`, Godot·웹은 `/ws`에 WSS로 접속하는 것이 목표입니다.
 
 ## 한눈에 보기
 
@@ -9,7 +9,7 @@
 3. 서버에 Docker 설치 → 코드 받아서 `docker compose up` (HTTPS는 아래 § HTTPS)
 4. Godot Inspector의 WebSocket URL을 `wss://hp028-railtwin.duckdns.org/ws` 로 바꾸기
 
-ESP32는 클라우드에 없습니다. 서버는 자동으로 **demo_mode** (가상 센서)로 돌아갑니다.
+`DEMO_MODE=true`면 가상 센서, `false`면 원격 ESP32-C3 WebSocket 입력만 사용합니다.
 
 > **대신 생성은 불가:** 네이버클라우드 콘솔은 본인 계정·결제·인증키가 필요해서  
 > Cursor/AI가 로그인해서 서버를 만들어 줄 수는 없습니다.  
@@ -184,8 +184,9 @@ scp -i 키.pem -r /Users/나/Developer/해운물류0717 root@공인IP:~/HP028_Ra
 ```bash
 cd ~/HP028_RailTwin
 cp .env.example .env
-# 클라우드에서는 SERIAL_PORT 가 없어도 demo_mode 로 동작합니다.
-# 필요 시 nano .env 로 DEVICE_ID 등만 수정
+# nano .env에서 SENSOR_AUTH_TOKEN을 긴 임의 문자열로 변경
+# 합성 시연: DEMO_MODE=true
+# 실제 ESP32-C3: DEMO_MODE=false, 펌웨어 secrets.h에도 같은 토큰 설정
 ```
 
 모델 파일 `rbf_dummy_model.pth` 는 git에 없을 수 있습니다.  
@@ -233,6 +234,7 @@ http://공인IP:8000/
 {
   "status": "ok",
   "demo_mode": true,
+  "sensor_ws_clients": 0,
   "ai_model_loaded": true
 }
 ```
@@ -279,7 +281,7 @@ ws://127.0.0.1:8000/ws
 | Godot 연결 실패 | URL이 `ws://` 인지, 공인 IP·포트 오타 |
 | 빌드 메모리 부족 | 서버 RAM 4GB 미만이면 스펙 업 |
 | `ai_model_loaded: false` | `docker compose logs` 확인 |
-| Influx 에러 로그 | 정상일 수 있음 (Influx 없이도 API·WS 동작) |
+| `influx_write_enabled: false` | `.env`의 Influx 토큰·조직이 비어 있어 DB 쓰기만 비활성화된 상태 |
 
 ---
 
@@ -321,6 +323,7 @@ sudo bash scripts/run_https.sh
 | 용도 | URL |
 |---|---|
 | 헬스/API | `https://hp028-railtwin.duckdns.org/` |
+| ESP32-C3 센서 업링크 | `wss://hp028-railtwin.duckdns.org/ws/sensor` |
 | Godot / 대시보드 WS | `wss://hp028-railtwin.duckdns.org/ws` |
 
 로컬 HTTP 개발으로 되돌릴 때: `docker compose -f docker-compose.yml up -d --build`  
@@ -335,5 +338,5 @@ sudo bash scripts/run_https.sh
 ## 참고 (다음에 할 수 있는 것)
 
 - ACG에서 팀원 IP만 허용
-- 실물 ESP32는 현장 PC에 두고, 클라우드로는 MQTT 등으로 중계 (현재 범위 밖)
+- `SENSOR_AUTH_TOKEN` 주기적 교체와 장치별 토큰 분리
 - 트래픽·인증서 자동 갱신을 더 편하게 쓰려면 이후 Nginx 리버스 프록시로 전환

@@ -9,6 +9,7 @@
 # 접속:
 #   https://hp028-railtwin.duckdns.org/
 #   wss://hp028-railtwin.duckdns.org/ws
+#   wss://hp028-railtwin.duckdns.org/ws/sensor  (ESP32-C3 업링크)
 
 services:
   railtwin:
@@ -25,7 +26,10 @@ services:
       RBF_MODEL_PATH: ${RBF_MODEL_PATH:-rbf_dummy_model.pth}
       RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-100}
       RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
-      DEVICE_ID: ${DEVICE_ID:-esp32-s3-cloud}
+      DEVICE_ID: ${DEVICE_ID:-rail-sensor}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      SENSOR_AUTH_TOKEN: ${SENSOR_AUTH_TOKEN:-}
+      SENSOR_WS_MAX_MESSAGE_BYTES: ${SENSOR_WS_MAX_MESSAGE_BYTES:-65536}
     command:
       - uvicorn
       - main:app
