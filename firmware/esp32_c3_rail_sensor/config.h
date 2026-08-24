@@ -24,6 +24,18 @@ constexpr int PIN_I2C_SCL = 9;
 constexpr int PIN_ENCODER_A = 6;
 constexpr int PIN_ENCODER_B = 7;
 
+// L298N on the left drive unit. If the wheel runs backward, set MOTOR_INVERT.
+// ENA jumper on the driver must be removed for PWM speed control.
+constexpr int PIN_MOTOR_IN1 = 4;
+constexpr int PIN_MOTOR_IN2 = 5;
+constexpr int PIN_MOTOR_ENA = 10;
+constexpr bool MOTOR_INVERT = false;
+constexpr uint32_t MOTOR_FORWARD_MS = 10'000;
+constexpr uint32_t MOTOR_PWM_FREQ_HZ = 5'000;
+constexpr uint8_t MOTOR_PWM_DUTY = 180;
+// Used only while the encoder is uncalibrated, so Godot can track the 10s run.
+constexpr float DEMO_DRIVE_LENGTH_MM = 1'000.0f;
+
 constexpr uint8_t ADS1115_ADDRESS = 0x48;
 constexpr uint8_t MPU6050_ADDRESS = 0x68;
 constexpr uint8_t ADS1115_CHANNEL = 0;
@@ -34,7 +46,7 @@ constexpr size_t SAMPLES_PER_BATCH = 10;
 constexpr uint32_t ADC_INTERVAL_US = 50'000;
 
 // Offline retry buffer. Oldest unpublished batch is discarded only when this is full.
-constexpr size_t MAX_PENDING_BATCHES = 24;
+constexpr size_t MAX_PENDING_BATCHES = 64;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 5'000;
 
 // Shared wheel geometry. Counts, direction and zero offset are node-specific.
@@ -46,7 +58,7 @@ constexpr float SENSOR_OUTPUT_MAX_V = 10.0f;
 constexpr float SENSOR_DISTANCE_MIN_MM = 1.0f;
 constexpr float SENSOR_DISTANCE_MAX_MM = 8.0f;
 
-constexpr char FIRMWARE_VERSION[] = "0.3.0";
+constexpr char FIRMWARE_VERSION[] = "0.4.0";
 
 // Public NCP endpoint. No hostname/TLS until a new domain is issued.
 constexpr char MQTT_HOST[] = "223.130.128.198";

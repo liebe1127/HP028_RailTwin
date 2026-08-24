@@ -1,8 +1,9 @@
 /**
  * ESP32-C3 rail sensor firmware
  *
- * MPU-6050 + ADS1115/LR18-08U + wheel encoder
- * 100 Hz acquisition -> 10-sample JSON batch -> WiFi MQTTS QoS 1 publish
+ * MPU-6050 + ADS1115/LR18-08U + wheel encoder + L298N demo drive
+ * Boot: motor forward 10s while sampling. 단차 impact is sent live over MQTT.
+ * 100 Hz acquisition -> 10-sample JSON batch -> WiFi MQTT QoS 1 publish
  *
  * Serial is used only for local diagnostics. It is not part of the data path.
  */
@@ -14,6 +15,7 @@
 #include <ESP32MQTTClient.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <esp_wifi.h>
 #include <esp_attr.h>
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -68,6 +70,9 @@ uint32_t droppedBatches = 0;
 uint64_t lastSampleUs = 0;
 uint64_t lastAdcUs = 0;
 uint32_t lastWifiAttemptMs = 0;
+bool wifiJoinLogged = false;
+bool motorRunning = false;
+uint32_t motorStartedMs = 0;
 
 int16_t latestAdcRaw = 0;
 float latestAdcVoltageV = 0.0f;
@@ -134,16 +139,27 @@ int32_t readEncoderCount() {
 }
 
 bool encoderPositionMm(float &positionMm) {
-  if (NODE_ENCODER_COUNTS_PER_WHEEL_REV <= 0.0f) {
+  if (NODE_ENCODER_COUNTS_PER_WHEEL_REV > 0.0f) {
+    const float circumferenceMm = PI * WHEEL_DIAMETER_MM;
+    positionMm =
+        NODE_POSITION_ZERO_OFFSET_MM +
+        static_cast<float>(
+            readEncoderCount() * NODE_ENCODER_DIRECTION) *
+            circumferenceMm /
+            NODE_ENCODER_COUNTS_PER_WHEEL_REV;
+    return true;
+  }
+  if (motorStartedMs == 0 || DEMO_DRIVE_LENGTH_MM <= 0.0f) {
     return false;
   }
-  const float circumferenceMm = PI * WHEEL_DIAMETER_MM;
+  uint32_t elapsedMs = millis() - motorStartedMs;
+  if (elapsedMs > MOTOR_FORWARD_MS) {
+    elapsedMs = MOTOR_FORWARD_MS;
+  }
   positionMm =
       NODE_POSITION_ZERO_OFFSET_MM +
-      static_cast<float>(
-          readEncoderCount() * NODE_ENCODER_DIRECTION) *
-          circumferenceMm /
-          NODE_ENCODER_COUNTS_PER_WHEEL_REV;
+      DEMO_DRIVE_LENGTH_MM * static_cast<float>(elapsedMs) /
+          static_cast<float>(MOTOR_FORWARD_MS);
   return true;
 }
 
@@ -162,8 +178,7 @@ void updateAdcReading(uint64_t nowUs) {
       dividerRatio > 0.0f ? latestAdcVoltageV / dividerRatio : 0.0f;
 
   latestDistanceValid = false;
-  if (NODE_ENABLE_LINEAR_DISTANCE_ESTIMATE &&
-      SENSOR_OUTPUT_MAX_V > SENSOR_OUTPUT_MIN_V) {
+  if (SENSOR_OUTPUT_MAX_V > SENSOR_OUTPUT_MIN_V) {
     const float normalized = constrain(
         (latestSensorVoltageV - SENSOR_OUTPUT_MIN_V) /
             (SENSOR_OUTPUT_MAX_V - SENSOR_OUTPUT_MIN_V),
@@ -347,10 +362,52 @@ void flushPendingBatch() {
   }
 }
 
+void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      Serial.println("[WIFI] associated");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.printf("[WIFI] got ip=%s\n", WiFi.localIP().toString().c_str());
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      wifiJoinLogged = false;
+      Serial.printf(
+          "[WIFI] disconnected reason=%u\n",
+          static_cast<unsigned>(info.wifi_sta_disconnected.reason));
+      break;
+    default:
+      break;
+  }
+}
+
+void configureC3StaRadio() {
+  wifi_country_t country = {};
+  country.cc[0] = 'K';
+  country.cc[1] = 'R';
+  country.schan = 1;
+  country.nchan = 13;
+  country.policy = WIFI_COUNTRY_POLICY_MANUAL;
+  esp_wifi_set_country(&country);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_protocol(
+      WIFI_IF_STA,
+      WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+  esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+}
+
 void connectWifiIfNeeded() {
   if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiJoinLogged) {
+      Serial.printf(
+          "[WIFI] connected ip=%s rssi=%d\n",
+          WiFi.localIP().toString().c_str(),
+          WiFi.RSSI());
+      wifiJoinLogged = true;
+    }
     return;
   }
+  wifiJoinLogged = false;
 
   const uint32_t nowMs = millis();
   if (nowMs - lastWifiAttemptMs < WIFI_RETRY_INTERVAL_MS) {
@@ -417,8 +474,51 @@ void configureMqtt() {
   }
 }
 
+void stopMotor() {
+  digitalWrite(PIN_MOTOR_IN1, LOW);
+  digitalWrite(PIN_MOTOR_IN2, LOW);
+  ledcWrite(PIN_MOTOR_ENA, 0);
+  if (motorRunning) {
+    Serial.println("[MOTOR] stop");
+    motorRunning = false;
+  }
+}
+
+void startMotorForward() {
+  digitalWrite(PIN_MOTOR_IN1, MOTOR_INVERT ? LOW : HIGH);
+  digitalWrite(PIN_MOTOR_IN2, MOTOR_INVERT ? HIGH : LOW);
+  ledcWrite(PIN_MOTOR_ENA, MOTOR_PWM_DUTY);
+  motorRunning = true;
+  motorStartedMs = millis();
+  Serial.printf(
+      "[MOTOR] forward %lus duty=%u\n",
+      static_cast<unsigned long>(MOTOR_FORWARD_MS / 1000),
+      static_cast<unsigned>(MOTOR_PWM_DUTY));
+}
+
+void updateMotor() {
+  if (!motorRunning) {
+    return;
+  }
+  if (millis() - motorStartedMs >= MOTOR_FORWARD_MS) {
+    stopMotor();
+  }
+}
+
+void initializeMotor() {
+  pinMode(PIN_MOTOR_IN1, OUTPUT);
+  pinMode(PIN_MOTOR_IN2, OUTPUT);
+  ledcAttach(PIN_MOTOR_ENA, MOTOR_PWM_FREQ_HZ, 8);
+  digitalWrite(PIN_MOTOR_IN1, LOW);
+  digitalWrite(PIN_MOTOR_IN2, LOW);
+  ledcWrite(PIN_MOTOR_ENA, 0);
+}
+
 void initializeSensors() {
+  Serial.println("[SENSOR] i2c begin");
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  Wire.setTimeOut(20);
+  Serial.println("[SENSOR] i2c ready");
 
   adsReady = ads.begin(ADS1115_ADDRESS, &Wire);
   if (adsReady) {
@@ -453,7 +553,8 @@ void initializeEncoder() {
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  delay(1500);
+  Serial.println("[BOOT] serial-ready");
   snprintf(
       bootId,
       sizeof(bootId),
@@ -468,15 +569,22 @@ void setup() {
 
   initializeSensors();
   initializeEncoder();
+  initializeMotor();
 
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  configureC3StaRadio();
+  WiFi.onEvent(onWifiEvent);
   WiFi.setAutoReconnect(true);
   lastWifiAttemptMs = millis() - WIFI_RETRY_INTERVAL_MS;
   lastSampleUs = esp_timer_get_time();
   lastAdcUs = lastSampleUs - ADC_INTERVAL_US;
+  startMotorForward();
 }
 
 void loop() {
+  updateMotor();
   connectWifiIfNeeded();
   configureMqtt();
 

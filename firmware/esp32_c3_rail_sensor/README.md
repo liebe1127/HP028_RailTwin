@@ -7,8 +7,9 @@ Current sensor module firmware for:
 - ADS1115
 - GTRIC LR18-08U
 - quadrature wheel encoder
+- L298N + geared wheel motor (10-second forward demo drive)
 
-The active data path is WiFi MQTTS QoS 1 to Mosquitto. USB serial output is diagnostic only.
+The active data path is WiFi MQTT QoS 1 to Mosquitto. USB serial output is diagnostic only.
 
 ## Arduino libraries
 
@@ -46,14 +47,30 @@ cp node_profile.right.h.example node_profile.h
 `node_profile.h` is intentionally ignored by Git. Compilation fails when it is missing or when both rail sides are selected. Confirm the serial boot banner before installing each board:
 
 ```text
-[BOOT] rail-left-01 firmware=0.3.0 rail=left boot=1a2b3c4d
-[BOOT] rail-right-01 firmware=0.3.0 rail=right boot=5e6f7788
+[BOOT] rail-left-01 firmware=0.4.0 rail=left boot=1a2b3c4d
+[BOOT] rail-right-01 firmware=0.4.0 rail=right boot=5e6f7788
 ```
 
 Never upload the left profile to both boards. The broker authenticates each node as `device_id`, and the server uses the combination of `device_id`, `rail_side`, and per-reboot `boot_id` for independent duplicate detection.
 
-With zero node encoder counts per revolution, `position_mm` is transmitted as `null`.
-Without calibrated LR18 conversion, `sensor_distance_mm` is transmitted as `null`; raw ADC and voltage fields remain available when ADS1115 is ready.
+With zero node encoder counts per revolution, the 10-second motor run reports a clock-based `position_mm` so the dashboard and Godot can follow the demo pass. Calibrated encoder counts replace that estimate.
+
+Without calibrated LR18 conversion, `sensor_distance_mm` is still sent as a nominal 0–10V to 1–8mm map when ADS1115 is ready; `status_flags` keeps the uncalibrated bit set.
+
+## Demo drive
+
+On boot the left (or right) node drives L298N forward for 10 seconds, then stops. Sampling and MQTT continue the whole time.
+
+Wire the driver to the C3 Mini as follows, then remove the ENA jumper if you want PWM speed:
+
+| L298N | ESP32-C3 |
+|---|---|
+| IN1 | GPIO 4 |
+| IN2 | GPIO 5 |
+| ENA | GPIO 10 |
+| GND | GND |
+
+If the wheel runs backward, set `MOTOR_INVERT` in `config.h`. Motor supply stays on the L298N 12V/battery input, not the C3 3.3V pin.
 
 ## Sampling and transport
 
