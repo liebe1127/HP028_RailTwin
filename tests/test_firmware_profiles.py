@@ -42,12 +42,15 @@ class FirmwareProfileTests(unittest.TestCase):
         self.assertIn("mqttTelemetryTopic", firmware)
         self.assertIn("enableLastWillMessage", firmware)
         self.assertIn("MQTT_QOS", firmware)
+        self.assertIn("startMotorForward", firmware)
+        self.assertIn("MOTOR_FORWARD_MS", firmware)
 
     def test_mqtt_endpoint_uses_current_ncp_ip(self) -> None:
         config = (FIRMWARE_DIR / "config.h").read_text(encoding="utf-8")
         self.assertIn("223.130.128.198", config)
         self.assertIn("MQTT_USE_TLS = false", config)
         self.assertIn("MQTT_PORT = 1883", config)
+        self.assertIn("MOTOR_FORWARD_MS = 10'000", config)
 
     def test_optional_tls_root_is_embedded(self) -> None:
         certificate = (

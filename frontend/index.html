@@ -202,15 +202,15 @@
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
       <div class="rounded-lg bg-slate-900/60 p-3">
         <div class="flex justify-between text-[11px] text-slate-500 mb-1">
-          <span>샘플 순번</span>
+          <span>가속도 크기 (덜컹)</span>
           <span id="chart-seq-label" class="mono">—</span>
         </div>
         <canvas id="chart-seq" class="spark"></canvas>
       </div>
       <div class="rounded-lg bg-slate-900/60 p-3">
         <div class="flex justify-between text-[11px] text-slate-500 mb-1">
-          <span>수신 속도</span>
-          <span id="chart-rate-label" class="mono">— Hz</span>
+          <span>GTRIC 거리</span>
+          <span id="chart-rate-label" class="mono">—</span>
         </div>
         <canvas id="chart-rate" class="spark"></canvas>
       </div>
@@ -639,7 +639,23 @@
       }
     }
 
-    function applyPayload(data) {
+    function accelMag(side) {
+      if (!side) return null;
+      const ax = Number(side.accel_x);
+      const ay = Number(side.accel_y);
+      const az = Number(side.accel_z);
+      if (![ax, ay, az].every(Number.isFinite)) return null;
+      return Math.sqrt(ax * ax + ay * ay + az * az);
+    }
+
+    function gapValue(side) {
+      if (!side) return null;
+      const distance = Number(side.sensor_distance_mm);
+      if (Number.isFinite(distance)) return distance;
+      const voltage = Number(side.sensor_voltage_v);
+      if (Number.isFinite(voltage)) return voltage;
+      return null;
+    }
       const source = data.source || (demoMode ? 'demo' : 'mqtt');
       const left = data.left && typeof data.left === 'object' ? data.left : data;
       const right = data.right && typeof data.right === 'object' ? data.right : null;
@@ -659,12 +675,15 @@
       document.getElementById('crane-danger').classList.toggle('show', source === 'demo');
       if (hasPosition) {
         document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / X_MAX) * 100)) + '%';
-        const danger = source === 'demo' && xn >= 40 && xn <= 50;
+        const mag = accelMag(left);
         const badge = document.getElementById('zone-badge');
-        badge.textContent = danger ? '위험 구간 (단차)' : (source === 'demo' ? '정상 구간' : 'MQTT 수신');
-        badge.className = danger
-          ? 'text-xs px-2 py-1 rounded-full border border-rose-700 text-rose-300'
-          : 'text-xs px-2 py-1 rounded-full border border-teal-800 text-teal-300';
+        if (mag != null && mag >= 12) {
+          badge.textContent = '단차 충격';
+          badge.className = 'text-xs px-2 py-1 rounded-full border border-rose-700 text-rose-300';
+        } else {
+          badge.textContent = 'MQTT 수신';
+          badge.className = 'text-xs px-2 py-1 rounded-full border border-teal-800 text-teal-300';
+        }
       } else {
         document.getElementById('zone-badge').textContent = '엔코더 미교정';
         document.getElementById('zone-badge').className =
@@ -701,17 +720,23 @@
       paintRisk(riskLeftEl, left.rail_risk);
       if (right) paintRisk(riskRightEl, right.rail_risk);
 
+      const mag = accelMag(left);
+      const gap = gapValue(left);
       if (Number.isFinite(Number(seq))) {
         document.getElementById('live-seq').textContent = String(seq);
-        pushSpark(sparkSeq, Number(seq));
-        document.getElementById('chart-seq-label').textContent = String(seq);
-        drawSpark('chart-seq', sparkSeq, '#2dd4bf');
       }
-      const hz = currentHz();
-      if (hz > 0) {
-        pushSpark(sparkRate, hz);
-        document.getElementById('chart-rate-label').textContent = hz.toFixed(1) + ' Hz';
-        drawSpark('chart-rate', sparkRate, '#60a5fa');
+      if (mag != null) {
+        pushSpark(sparkSeq, mag);
+        document.getElementById('chart-seq-label').textContent = mag.toFixed(2);
+        drawSpark('chart-seq', sparkSeq, '#f43f5e');
+      }
+      if (gap != null) {
+        pushSpark(sparkRate, gap);
+        document.getElementById('chart-rate-label').textContent =
+          Number.isFinite(Number(left.sensor_distance_mm))
+            ? gap.toFixed(2) + ' mm'
+            : gap.toFixed(2) + ' V';
+        drawSpark('chart-rate', sparkRate, '#2dd4bf');
       }
       if (left.CREST != null) {
         pushSpark(sparkCrest, Number(left.CREST));
@@ -732,6 +757,7 @@
           status_flags: left.status_flags,
           distance_x: left.distance_x,
           sensor_distance_mm: left.sensor_distance_mm,
+          sensor_voltage_v: left.sensor_voltage_v,
           CREST: left.CREST,
           PRED_RAIL_DEFORM: left.PRED_RAIL_DEFORM,
           dropped_batches: left.dropped_batches,
@@ -845,8 +871,8 @@
 
     document.getElementById('btn-reset-risk').addEventListener('click', resetRailRisk);
     window.addEventListener('resize', () => {
-      drawSpark('chart-seq', sparkSeq, '#2dd4bf');
-      drawSpark('chart-rate', sparkRate, '#60a5fa');
+      drawSpark('chart-seq', sparkSeq, '#f43f5e');
+      drawSpark('chart-rate', sparkRate, '#2dd4bf');
       drawSpark('chart-crest', sparkCrest, '#f59e0b');
     });
 

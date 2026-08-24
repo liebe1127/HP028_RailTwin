@@ -299,6 +299,7 @@ func _apply_payload(data: Dictionary) -> void:
 	if not right.is_empty() and right.has("rail_risk") and right["rail_risk"] is Array:
 		right_risk = _update_rail_risk_from_array(right["rail_risk"] as Array, right_meshes)
 		_apply_segment_colors(right_meshes, right_risk)
+	_paint_live_step_impact()
 
 
 func _apply_shared_fields(data: Dictionary) -> void:
@@ -326,6 +327,20 @@ func _apply_shared_fields(data: Dictionary) -> void:
 		if sc > 0 and sc != segment_count and auto_build_segments:
 			segment_count = sc
 			_setup_segments()
+
+
+func _paint_live_step_impact() -> void:
+	if left_meshes.is_empty() or rail_length_m <= 0.0 or left_risk.is_empty():
+		return
+	var impact: float = clampf((target_crest - 1.5) / 4.0, 0.0, 1.0)
+	if impact <= 0.0:
+		return
+	var idx: int = int(
+		clampf(target_distance_m / rail_length_m, 0.0, 0.999) * float(left_meshes.size())
+	)
+	if idx >= 0 and idx < left_risk.size():
+		left_risk[idx] = maxf(left_risk[idx], impact)
+	_apply_segment_colors(left_meshes, left_risk)
 
 
 func _update_rail_risk_from_array(
