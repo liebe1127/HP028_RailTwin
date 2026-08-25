@@ -81,7 +81,6 @@ float latestSensorDistanceMm = 0.0f;
 bool latestDistanceValid = false;
 
 volatile int32_t encoderCount = 0;
-volatile uint8_t lastEncoderState = 0;
 portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
 
 char bootId[9] = "";
@@ -95,13 +94,6 @@ constexpr uint32_t STATUS_MPU_UNAVAILABLE = 1U << 0;
 constexpr uint32_t STATUS_ADS_UNAVAILABLE = 1U << 1;
 constexpr uint32_t STATUS_ENCODER_UNCALIBRATED = 1U << 2;
 constexpr uint32_t STATUS_DISTANCE_UNCALIBRATED = 1U << 3;
-DRAM_ATTR const int8_t ENCODER_TRANSITION_TABLE[16] = {
-    0, -1, 1, 0,
-    1, 0, 0, -1,
-    -1, 0, 0, 1,
-    0, 1, -1, 0,
-};
-
 uint32_t currentStatusFlags() {
   uint32_t flags = 0;
   if (!mpuReady) {
@@ -119,15 +111,9 @@ uint32_t currentStatusFlags() {
   return flags;
 }
 
-void ARDUINO_ISR_ATTR handleEncoderChange() {
-  const uint8_t currentState =
-      (static_cast<uint8_t>(digitalRead(PIN_ENCODER_A)) << 1) |
-      static_cast<uint8_t>(digitalRead(PIN_ENCODER_B));
-  const uint8_t transition = (lastEncoderState << 2) | currentState;
-
+void ARDUINO_ISR_ATTR handleEncoderPulse() {
   portENTER_CRITICAL_ISR(&encoderMux);
-  encoderCount += ENCODER_TRANSITION_TABLE[transition];
-  lastEncoderState = currentState;
+  encoderCount += 1;
   portEXIT_CRITICAL_ISR(&encoderMux);
 }
 
@@ -498,6 +484,9 @@ void startMotorForward() {
 
 void updateMotor() {
   if (!motorRunning) {
+    if (motorStartedMs == 0 && millis() >= MOTOR_START_DELAY_MS) {
+      startMotorForward();
+    }
     return;
   }
   if (millis() - motorStartedMs >= MOTOR_FORWARD_MS) {
@@ -540,15 +529,9 @@ void initializeSensors() {
 }
 
 void initializeEncoder() {
-  pinMode(PIN_ENCODER_A, INPUT_PULLUP);
-  pinMode(PIN_ENCODER_B, INPUT_PULLUP);
-  lastEncoderState =
-      (static_cast<uint8_t>(digitalRead(PIN_ENCODER_A)) << 1) |
-      static_cast<uint8_t>(digitalRead(PIN_ENCODER_B));
+  pinMode(PIN_ENCODER, INPUT_PULLUP);
   attachInterrupt(
-      digitalPinToInterrupt(PIN_ENCODER_A), handleEncoderChange, CHANGE);
-  attachInterrupt(
-      digitalPinToInterrupt(PIN_ENCODER_B), handleEncoderChange, CHANGE);
+      digitalPinToInterrupt(PIN_ENCODER), handleEncoderPulse, RISING);
 }
 
 void setup() {
@@ -580,7 +563,6 @@ void setup() {
   lastWifiAttemptMs = millis() - WIFI_RETRY_INTERVAL_MS;
   lastSampleUs = esp_timer_get_time();
   lastAdcUs = lastSampleUs - ADC_INTERVAL_US;
-  startMotorForward();
 }
 
 void loop() {

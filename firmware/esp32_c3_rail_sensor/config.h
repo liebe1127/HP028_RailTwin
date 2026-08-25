@@ -21,20 +21,27 @@ static_assert(
 // Hardware pins. Verify these values against the assembled ESP32-C3 Mini module.
 constexpr int PIN_I2C_SDA = 8;
 constexpr int PIN_I2C_SCL = 9;
-constexpr int PIN_ENCODER_A = 6;
-constexpr int PIN_ENCODER_B = 7;
+// Single-channel Hall pulse from the gear motor (no quadrature B line wired).
+// Direction is not sensed from hardware; NODE_ENCODER_DIRECTION is trusted as-is.
+constexpr int PIN_ENCODER = 3;
 
-// L298N on the left drive unit. If the wheel runs backward, set MOTOR_INVERT.
+// L298N on the drive unit. If the wheel runs backward, set MOTOR_INVERT.
 // ENA jumper on the driver must be removed for PWM speed control.
-constexpr int PIN_MOTOR_IN1 = 4;
-constexpr int PIN_MOTOR_IN2 = 5;
-constexpr int PIN_MOTOR_ENA = 10;
-constexpr bool MOTOR_INVERT = false;
-constexpr uint32_t MOTOR_FORWARD_MS = 10'000;
+constexpr int PIN_MOTOR_IN1 = 0;
+constexpr int PIN_MOTOR_IN2 = 1;
+constexpr int PIN_MOTOR_ENA = 4;
+constexpr bool MOTOR_INVERT = true;
+// Give WiFi/MQTT time to connect before the demo drive starts, so the live
+// dashboard is already watching when the motor moves.
+constexpr uint32_t MOTOR_START_DELAY_MS = 15'000;
+constexpr uint32_t MOTOR_FORWARD_MS = 30'000;
 constexpr uint32_t MOTOR_PWM_FREQ_HZ = 5'000;
+// Speed unchanged from the 20s run (duty=180); only the run duration was
+// extended. DEMO_DRIVE_LENGTH_MM scaled 700mm/20s -> 1050mm/30s to keep the
+// same assumed speed for the dashboard's uncalibrated position estimate.
 constexpr uint8_t MOTOR_PWM_DUTY = 180;
-// Used only while the encoder is uncalibrated, so Godot can track the 10s run.
-constexpr float DEMO_DRIVE_LENGTH_MM = 1'000.0f;
+// Used only while the encoder is uncalibrated, so Godot can track the run.
+constexpr float DEMO_DRIVE_LENGTH_MM = 1'050.0f;
 
 constexpr uint8_t ADS1115_ADDRESS = 0x48;
 constexpr uint8_t MPU6050_ADDRESS = 0x68;
