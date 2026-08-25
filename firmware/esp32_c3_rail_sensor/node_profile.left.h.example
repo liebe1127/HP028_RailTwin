@@ -9,7 +9,7 @@ constexpr char RAIL_SIDE[] = "left";
 // Change direction to -1 only if forward crane travel decreases encoder position.
 constexpr int8_t NODE_ENCODER_DIRECTION = 1;
 constexpr float NODE_POSITION_ZERO_OFFSET_MM = 0.0f;
-// Set from measured quadrature counts per wheel revolution.
+// Set from measured encoder pulse counts per wheel revolution.
 // position_mm remains null while this is zero.
 constexpr float NODE_ENCODER_COUNTS_PER_WHEEL_REV = 0.0f;
 

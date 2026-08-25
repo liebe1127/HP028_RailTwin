@@ -59,16 +59,20 @@ Without calibrated LR18 conversion, `sensor_distance_mm` is still sent as a nomi
 
 ## Demo drive
 
-On boot the left (or right) node drives L298N forward for 10 seconds, then stops. Sampling and MQTT continue the whole time.
+On boot the left (or right) node waits 15 seconds (for WiFi/MQTT to connect), then drives L298N forward for 10 seconds and stops. Sampling and MQTT run the whole time, including the 15s wait.
 
 Wire the driver to the C3 Mini as follows, then remove the ENA jumper if you want PWM speed:
 
 | L298N | ESP32-C3 |
 |---|---|
-| IN1 | GPIO 4 |
-| IN2 | GPIO 5 |
-| ENA | GPIO 10 |
+| IN1 | GPIO 0 |
+| IN2 | GPIO 1 |
+| ENA | GPIO 4 |
 | GND | GND |
+
+The wheel motor's Hall encoder is single-channel (no quadrature B line): signal on
+GPIO 3, powered from 3.3V/GND. Direction is not sensed from hardware; it is trusted
+from `NODE_ENCODER_DIRECTION` in the node profile.
 
 If the wheel runs backward, set `MOTOR_INVERT` in `config.h`. Motor supply stays on the L298N 12V/battery input, not the C3 3.3V pin.
 
