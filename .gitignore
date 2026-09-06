@@ -29,3 +29,7 @@ build/
 # IDE
 .cursor/
 *.code-workspace
+
+# For KiCAD & FreeCAD
+*.zip
+*.FCBak
