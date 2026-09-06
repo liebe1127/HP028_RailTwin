@@ -13,15 +13,16 @@
 * **배용진:** SENSOR & EDGE (엣지 컴퓨팅 및 센서 데이터 획득/전처리)
 * **배준호:** BACKEND & REAL-TIME DATA STREAM / AI PREDICTIVE MODEL (비동기 백엔드, 데이터 스트림 구축 및 PyTorch RBF 레일 변형 예측 엔진 구현)
 * **김병서:** DIGITAL TWIN & WEB VIEW (1:1 스케일 물리 모델 매핑 및 웹/3D 기반 실시간 레일 위험 상태 시각화)
+* **김정우:** 프로젝트 관리 및 크레인 축척 모형 설계 및 개발
 
 ## 사용 하드웨어 및 기술 스택
 
-* **현재 하드웨어 (Edge):** 좌·우 레일 구동부별 ESP32-C3 Mini 1대씩, 각 노드의 MPU-6050(6축 자이로/가속도), ADS1115(외부 ADC), GTRIC M18 아날로그 유도형 근접 센서.
+* **현재 하드웨어 (Edge):** 좌·우 레일 구동부별 ESP32-C3 Mini 1대씩, 각 노드의 MPU-6050(6축 자이로/가속도), ADS1115(외부 ADC), GTRIC M18 아날로그 유도형 근접 센서, 모터 홀 엔코더
 * **하드웨어 이력:** ESP32-S3·ADXL345·HC-SR04 구성과 기존 펌웨어는 취소된 초기 프로토타입이며 현재 구성에 사용하지 않습니다. 자세한 구분은 [`docs/hardware-configuration-history.md`](docs/hardware-configuration-history.md)를 참조하세요.
-* **백엔드 & 스트림:** Python, FastAPI, InfluxDB, ESP32 MQTTS 업링크, 웹·Godot 다운링크 WebSocket.
+* **백엔드 & 스트림:** Python, FastAPI, InfluxDB, ESP32 MQTTS 업링크, 웹·Godot4 다운링크 WebSocket.
 * **AI 모델:** PyTorch, RBF(Radial Basis Function) 기반 대리 모델 (입력: 진동/가속도 특징 + 파고율 등).
 * **특징 공학:** 웨이블릿(`sym3`) 디노이징, 파고율(Crest Factor) 추출 — 레일 단차 충격 특징 강조.
-* **프론트엔드 / 디지털 트윈:** HTML/Vanilla JS, Tailwind CSS, Godot 3D (시연·시각화).
+* **프론트엔드 / 디지털 트윈:** HTML/Vanilla JS, Tailwind CSS, Godot4 3D (시연·시각화).
 
 ## 시스템 아키텍처 및 개발 로드맵
 
@@ -37,7 +38,7 @@
 ### Phase 2: Backend & Real-Time Data Stream (프로토타입 완료, 고도화 예정)
 
 * **센서 업링크:** ESP32-C3 → WiFi → MQTTS QoS 1 → NCP Mosquitto → FastAPI 구독 → 비동기 Queue.
-* **분석 다운링크:** FastAPI → `/ws` → 웹 대시보드 / Godot.
+* **분석 다운링크:** FastAPI → `/ws` → 웹 대시보드 / Godot4.
 * **시연:** `DEMO_MODE=true`일 때 1m 레일·40~50cm 단차 충격 더미 스트리머(10Hz)로 파이프라인 검증.
 
 ### Phase 3: Real-Time AI Predictive Model (진행 중)
