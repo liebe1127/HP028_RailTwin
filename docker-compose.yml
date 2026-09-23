@@ -40,7 +40,6 @@ services:
       - path: .env
         required: false
     environment:
-      RBF_MODEL_PATH: ${RBF_MODEL_PATH:-rbf_dummy_model.pth}
       RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-100}
       RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
       DEVICE_ID: ${DEVICE_ID:-rail-sensor}

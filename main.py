@@ -1,36 +1,24 @@
 """
 main.py
-갠트리 크레인 레일 변형 예측 FastAPI 서버
-주행 진동·가속도 수집 → 특징 공학 → RBF로 하부 레일 변형(단차·침하·뒤틀림) 지표 추론
+갠트리 크레인 레일 이상 구간 FastAPI 서버
+주행 중 간격·기울기·위치 수집 → 규칙 판정 → 웹 대시보드·Unity WebGL
 
 아키텍처:
-  [ESP32-C3] --MQTTS QoS 1--> [Mosquitto] --> [MQTT Subscriber] --> [asyncio.Queue]
+  [ESP32-C3] --MQTT QoS 1--> [Mosquitto] --> [MQTT Subscriber] --> [asyncio.Queue]
   [더미 스트리머] -----------------------------------------------------------> [Consumer Task]
                                                                                  --> [InfluxDB]
-                                                                                 --> [RBF 레일 변형 추론]
-                                                                                 --> [left/right rail_risk]
+                                                                                 --> [4분류 규칙 판정]
+                                                                                 --> [left/right rail_risk · defects · motion]
                                                                                  --> [WebSocket /ws]
 
 실행:
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-WebSocket 테스트:
-  websocat ws://localhost:8000/ws
-  # 또는 브라우저 콘솔: new WebSocket("ws://localhost:8000/ws")
-
 환경 변수 (.env 파일 또는 shell export):
-  MQTT_HOST         127.0.0.1
-  MQTT_PORT         1883
-  MQTT_USERNAME     railtwin-backend
-  MQTT_PASSWORD     broker-password
-  MQTT_TLS          true|false
-  DEMO_MODE         true|false
-  INFLUX_URL       http://localhost:8086
-  INFLUX_TOKEN     your-influxdb-token
-  INFLUX_ORG       your-org
-  INFLUX_BUCKET    crane_data
-  DEVICE_ID        esp32-s3
-  RBF_MODEL_PATH   rbf_dummy_model.pth   (ml/train_rbf_surrogate.py로 학습한 가중치)
+  MQTT_HOST, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, MQTT_TLS
+  DEMO_MODE, MIRROR_RIGHT_TO_LEFT
+  INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_BUCKET
+  DEVICE_ID, RAIL_LENGTH_CM, RAIL_SEGMENT_COUNT
 """
 
 from __future__ import annotations
@@ -41,14 +29,12 @@ import logging
 import mimetypes
 import os
 import time
-from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import paho.mqtt.client as mqtt
-import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -56,14 +42,7 @@ from fastapi.staticfiles import StaticFiles
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 from influxdb_client import Point, WritePrecision
 
-from ml.train_rbf_surrogate import (
-    FEATURE_NAMES,
-    WINDOW_LEN,
-    RBFSurrogateModel,
-    dynamic_accel_magnitude,
-    extract_engineered_features,
-    gyro_magnitude,
-)
+from rail_defect import DefectRuleEngine
 from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_batch
 
 # ─────────────────────────────────────────────
@@ -96,6 +75,15 @@ DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").strip().lower() in {
     "yes",
     "on",
 }
+# 중간 시연: left ESP32가 없으면 right WS 페이로드를 left에 복제 (대시보드·Unity 공통)
+MIRROR_RIGHT_TO_LEFT: bool = os.getenv(
+    "MIRROR_RIGHT_TO_LEFT", "true"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 INFLUX_URL: str = os.getenv("INFLUX_URL", "http://localhost:8086")
 INFLUX_TOKEN: str = os.getenv("INFLUX_TOKEN", "")
@@ -107,23 +95,17 @@ DEVICE_ID: str = os.getenv("DEVICE_ID", "rail-sensor")
 MEASUREMENT = "crane_sensor"
 QUEUE_MAX_SIZE = 100  # 큐 최대 적재 수 (초과 시 가장 오래된 항목 드롭)
 
-RBF_MODEL_PATH: str = os.getenv("RBF_MODEL_PATH", "rbf_dummy_model.pth")
-
-# 시연용 더미 스트리머 (1m 플라스틱 크레인)
+# 시연용 더미 스트리머 (1m 축소 레일, 갠트리 크레인 주행)
 DEMO_HZ_INTERVAL = 0.1          # 10Hz
-DEMO_RAIL_LENGTH_CM = 100.0     # 레일 왕복 거리
-DEMO_DANGER_START_CM = 40.0
-DEMO_DANGER_END_CM = 50.0
-DEMO_DANGER_CENTER_CM = 45.0
+DEMO_RAIL_LENGTH_CM = 100.0
+DEMO_JOINT_CM = (20.0, 25.0)
+DEMO_VERTICAL_CM = (45.0, 70.0)
+DEMO_CROSS_CM = (80.0, 90.0)
 G_MS2 = 9.80665
 
-# 레일 구간 위험도 히트맵 (Godot 디지털 트윈용)
+# 레일 구간 이상 히트맵 (웹·Unity WebGL)
 RAIL_LENGTH_CM: float = float(os.getenv("RAIL_LENGTH_CM", str(DEMO_RAIL_LENGTH_CM)))
 RAIL_SEGMENT_COUNT: int = int(os.getenv("RAIL_SEGMENT_COUNT", "20"))
-# CREST / PRED → 0~1 위험도로 정규화할 때 쓰는 스케일
-CREST_RISK_LOW = 1.5
-CREST_RISK_HIGH = 5.0
-PRED_RISK_SCALE = 5.0
 
 # 좌/우 레일 각각 구간별 위험도 (0.0=정상 ~ 1.0=높음). 주행하며 max로 누적.
 rail_risk_state: dict[str, list[float]] = {
@@ -140,6 +122,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("crane")
+mimetypes.add_type("application/wasm", ".wasm")
 
 # ─────────────────────────────────────────────
 #  공유 큐 (Producer → Consumer)
@@ -267,159 +250,14 @@ def record_sensor_node_status(status: dict) -> None:
 
 
 # ─────────────────────────────────────────────
-#  AI 추론: PyTorch RBF 레일 변형 대리 모델
-#  모델 정의는 ml/train_rbf_surrogate.py (centers=64, output_dim=1).
-#  입력은 MPU6050·LR18·엔코더 롤링 윈도우의 특징 공학 결과다.
+#  규칙 판정: 이음부 단차 / 수직 변형 / 좌우 높이차
 # ─────────────────────────────────────────────
-ml_state: dict = {
-    "model": None,
-    "device": None,
-    "x_mean": None,
-    "x_std": None,
-    "y_mean": None,
-    "y_std": None,
-}
-
-# 좌/우 레일별 특징 공학 롤링 윈도우
-feature_windows: dict[str, dict[str, deque]] = {
-    side: {
-        "accel": deque(maxlen=WINDOW_LEN),
-        "gyro": deque(maxlen=WINDOW_LEN),
-        "distance": deque(maxlen=WINDOW_LEN),
-        "position_time": deque(maxlen=2),
-    }
-    for side in RAIL_SIDES
-}
-
-
-def get_inference_device() -> torch.device:
-    if torch.backends.mps.is_available():
-        return torch.device("mps")   # Apple Silicon GPU
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
-def load_rbf_model(path: str) -> None:
-    """
-    학습된 RBF 대리 모델(.pth)을 로드해 ml_state에 채운다.
-    파일이 없거나 손상된 경우에도 예외를 삼키고 로그만 남겨
-    서버는 AI 추론 없이 정상 기동한다.
-    """
-    try:
-        device = get_inference_device()
-        checkpoint = torch.load(path, map_location=device, weights_only=False)
-        if checkpoint.get("model_contract_version") != 2:
-            raise ValueError("현재 센서용 model_contract_version=2 모델이 아닙니다.")
-        checkpoint_features = checkpoint.get("feature_names")
-        if checkpoint_features != FEATURE_NAMES:
-            raise ValueError(
-                "모델 feature_names가 현재 센서 계약과 다릅니다. "
-                "ml/train_rbf_surrogate.py로 다시 학습하세요."
-            )
-
-        model = RBFSurrogateModel(
-            input_dim=checkpoint["input_dim"],
-            num_centers=checkpoint["num_centers"],
-            output_dim=checkpoint["output_dim"],
-        )
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.to(device)
-        model.eval()
-
-        ml_state["model"] = model
-        ml_state["device"] = device
-        ml_state["x_mean"] = checkpoint["x_mean"].to(device)
-        ml_state["x_std"] = checkpoint["x_std"].to(device)
-        ml_state["y_mean"] = checkpoint["y_mean"].to(device)
-        ml_state["y_std"] = checkpoint["y_std"].to(device)
-
-        logger.info("RBF 모델 로드 완료: %s (device=%s)", path, device)
-    except Exception as exc:
-        logger.error(
-            "RBF 모델 로드 실패 (%s) — AI 추론 없이 서버를 계속 실행합니다: %s", path, exc
-        )
-        ml_state["model"] = None
-
-
-def preprocess_and_extract_features(
-    data: dict, side: str = "left"
-) -> tuple[list[float | None], float]:
-    """
-    MPU6050·LR18·엔코더 원시값을 롤링 창에 적재하고,
-    웨이블릿·RMS·peak-to-peak·파고율·거리 변화·속도 특징을 만든다.
-    """
-    windows = feature_windows.setdefault(
-        side,
-        {
-            "accel": deque(maxlen=WINDOW_LEN),
-            "gyro": deque(maxlen=WINDOW_LEN),
-            "distance": deque(maxlen=WINDOW_LEN),
-            "position_time": deque(maxlen=2),
-        },
-    )
-
-    accel_values = [data.get(key) for key in ("accel_x", "accel_y", "accel_z")]
-    if all(isinstance(value, (int, float)) for value in accel_values):
-        windows["accel"].append(
-            dynamic_accel_magnitude(*(float(value) for value in accel_values))
-        )
-
-    gyro_values = [data.get(key) for key in ("gyro_x", "gyro_y", "gyro_z")]
-    if all(isinstance(value, (int, float)) for value in gyro_values):
-        windows["gyro"].append(
-            gyro_magnitude(*(float(value) for value in gyro_values))
-        )
-
-    sensor_distance = data.get("sensor_distance_mm")
-    if isinstance(sensor_distance, (int, float)):
-        windows["distance"].append(float(sensor_distance))
-
-    position = data.get("position_mm")
-    received_at = data.get("_received_at")
-    if isinstance(position, (int, float)) and isinstance(
-        received_at, (int, float)
-    ):
-        windows["position_time"].append((float(position), float(received_at)))
-
-    speed_mm_s = 0.0
-    if len(windows["position_time"]) == 2:
-        previous, current = windows["position_time"]
-        elapsed = current[1] - previous[1]
-        if elapsed > 0.0:
-            speed_mm_s = abs(current[0] - previous[0]) / elapsed
-
-    features = extract_engineered_features(
-        np.asarray(windows["accel"], dtype=np.float64),
-        np.asarray(windows["gyro"], dtype=np.float64),
-        np.asarray(windows["distance"], dtype=np.float64),
-        speed_mm_s,
-    )
-    crest_index = FEATURE_NAMES.index("crest_factor")
-    demo_target = data.get("_demo_crest_target")
-    if demo_target is not None:
-        features[crest_index] = float(demo_target)
-    crest = features[crest_index]
-    data["_engineered_features"] = dict(zip(FEATURE_NAMES, features))
-    return features, float(crest or 0.0)
-
-
-def normalize_risk(pred_rail_deform: float | None, crest: float | None) -> float:
-    """PRED / CREST를 0~1 구간 위험도로 정규화. 둘 다 있으면 큰 쪽을 사용."""
-    scores: list[float] = []
-    if crest is not None:
-        scores.append(
-            float(
-                np.clip(
-                    (float(crest) - CREST_RISK_LOW) / (CREST_RISK_HIGH - CREST_RISK_LOW),
-                    0.0,
-                    1.0,
-                )
-            )
-        )
-    if pred_rail_deform is not None:
-        scores.append(float(np.clip(float(pred_rail_deform) / PRED_RISK_SCALE, 0.0, 1.0)))
-    return max(scores) if scores else 0.0
+defect_engine = DefectRuleEngine(
+    segment_count=RAIL_SEGMENT_COUNT,
+    rail_length_cm=RAIL_LENGTH_CM,
+)
+mqtt_command_client: mqtt.Client | None = None
+last_motion_command: str | None = None
 
 
 def update_rail_risk(
@@ -440,58 +278,31 @@ def update_rail_risk(
 
 
 def reset_rail_risk_state(side: str | None = None) -> dict[str, list[float]]:
-    """누적 rail_risk를 0으로 초기화. side가 None이면 left/right 모두."""
-    targets = RAIL_SIDES if side is None else (side,)
-    for s in targets:
-        if s not in RAIL_SIDES:
-            continue
+    """누적 단계 색과 4분류 기준선을 초기화한다. 판정은 좌·우 쌍이라 항상 같이 지운다."""
+    del side
+    for s in RAIL_SIDES:
         rail_risk_state[s] = [0.0] * RAIL_SEGMENT_COUNT
+    defect_engine.reset()
     return {s: list(rail_risk_state[s]) for s in RAIL_SIDES}
 
 
-def predict_rail_deform(
-    data: dict, side: str = "left"
-) -> tuple[float | None, float | None]:
-    """
-    특징 공학 → RBF → 하부 주행 레일 변형 지표(스칼라).
-
-    Returns:
-        (pred_rail_deform, crest) — 실패 시 해당 값은 None
-    """
-    model = ml_state.get("model")
-    crest: float | None = None
-
-    try:
-        raw_values, crest = preprocess_and_extract_features(data, side)
-    except Exception as exc:
-        logger.error("특징 추출 실패 (건너뜀): %s", exc)
-        return None, None
-
-    if model is None:
-        return None, crest
-
-    try:
-        device = ml_state["device"]
-        x_mean = ml_state["x_mean"]
-        x_std = ml_state["x_std"]
-        y_mean = ml_state["y_mean"]
-        y_std = ml_state["y_std"]
-
-        filled: list[float] = []
-        for i, val in enumerate(raw_values):
-            filled.append(float(x_mean[0, i].item()) if val is None else float(val))
-
-        x = torch.tensor([filled], dtype=torch.float32, device=device)
-        x_norm = (x - x_mean) / x_std
-
-        with torch.no_grad():
-            pred_norm = model(x_norm)
-
-        pred_rail_deform = float(pred_norm.item() * y_std.item() + y_mean.item())
-        return pred_rail_deform, crest
-    except Exception as exc:
-        logger.error("AI 추론 실패 (건너뜀): %s", exc)
-        return None, crest
+def publish_motion_command(motion: str) -> None:
+    """주의는 감속, 위험 진입 전은 정지. 토픽 rail/v1/nodes/{id}/command."""
+    global last_motion_command
+    if motion not in {"cruise", "slow", "stop"} or motion == last_motion_command:
+        return
+    last_motion_command = motion
+    client = mqtt_command_client
+    if client is None or not mqtt_state.get("connected"):
+        return
+    payload = json.dumps({"motion": motion}, ensure_ascii=False)
+    for device_id in ("rail-left-01", "rail-right-01"):
+        client.publish(
+            f"{MQTT_TOPIC_PREFIX}/{device_id}/command",
+            payload,
+            qos=1,
+            retain=False,
+        )
 
 
 def split_rail_samples(data: dict) -> tuple[str, dict[str, dict]]:
@@ -511,11 +322,11 @@ def build_side_ws_payload(
     sample: dict,
     *,
     side: str,
-    pred_rail_deform: float | None,
-    crest: float | None,
+    evaluation: dict,
     rail_risk: list[float],
+    defects: list[dict],
 ) -> dict:
-    """Godot left/right 객체 하나에 넣을 레일별 페이로드."""
+    """웹·Unity left/right 객체 하나에 넣을 레일별 페이로드."""
     position_mm = sample.get("position_mm")
     distance_x = (
         float(position_mm) / 10.0
@@ -536,8 +347,26 @@ def build_side_ws_payload(
         "gyro_x": sample.get("gyro_x"),
         "gyro_y": sample.get("gyro_y"),
         "gyro_z": sample.get("gyro_z"),
-        "CREST": crest,
-        "PRED_RAIL_DEFORM": pred_rail_deform,
+        "roll_deg": evaluation.get("tilt_deg", evaluation.get("roll_deg")),
+        "distance_delta_mm": evaluation.get("delta_mm", evaluation.get("distance_delta_mm")),
+        "m_mm": evaluation.get("m_mm"),
+        "delta_mm": evaluation.get("delta_mm"),
+        "dm_dx": evaluation.get("dm_dx"),
+        "ddelta_dx": evaluation.get("ddelta_dx"),
+        "apeak": evaluation.get("apeak"),
+        "tilt_deg": evaluation.get("tilt_deg"),
+        "defect_type": evaluation.get("defect_type"),
+        "stage": evaluation.get("stage"),
+        "motion": evaluation.get("motion"),
+        "magnitude_mm": evaluation.get("magnitude_mm"),
+        "limit_mm": evaluation.get("limit_mm"),
+        "limit_source": evaluation.get("limit_source"),
+        "remaining_s": evaluation.get("remaining_s"),
+        "rate_mm_per_s": evaluation.get("rate_mm_per_s"),
+        "relative_fast": evaluation.get("relative_fast"),
+        "pass_count": evaluation.get("pass_count"),
+        "abnormal_score": evaluation.get("score"),
+        "defects": defects,
         "rail_risk": rail_risk,
         "rail_length_cm": RAIL_LENGTH_CM,
         "segment_count": RAIL_SEGMENT_COUNT,
@@ -549,7 +378,6 @@ def build_side_ws_payload(
         "firmware_version": sample.get("firmware_version"),
         "boot_id": sample.get("boot_id"),
         "status_flags": sample.get("status_flags"),
-        "features": sample.get("_engineered_features"),
     }
 
 
@@ -558,14 +386,55 @@ def update_downlink_snapshot(source: str, side_payloads: dict[str, dict]) -> dic
     for side, payload in side_payloads.items():
         if side in RAIL_SIDES:
             latest_ws_payload_by_side[side] = payload
-    return {
+    snapshot = {
         "source": source,
+        "motion": _snapshot_motion(side_payloads),
+        "simulation": source == "demo",
         **{
             side: latest_ws_payload_by_side[side]
             for side in RAIL_SIDES
             if side in latest_ws_payload_by_side
         },
     }
+    return apply_right_to_left_mirror(snapshot)
+
+
+def _snapshot_motion(side_payloads: dict[str, dict]) -> str:
+    rank = {"cruise": 0, "slow": 1, "stop": 2}
+    chosen = "cruise"
+    for payload in side_payloads.values():
+        motion = payload.get("motion")
+        if motion in rank and rank[motion] > rank[chosen]:
+            chosen = motion
+    return chosen
+
+
+def apply_right_to_left_mirror(snapshot: dict) -> dict:
+    """시연용: left 노드가 끊겨 있으면 right 페이로드를 left에 복제해 /ws로 보낸다."""
+    if not MIRROR_RIGHT_TO_LEFT:
+        return snapshot
+    right = snapshot.get("right")
+    if not isinstance(right, dict):
+        return snapshot
+    left_connected = bool(sensor_node_state.get("left", {}).get("connected"))
+    if left_connected:
+        return snapshot
+
+    left = dict(right)
+    left["rail_side"] = "left"
+    left["device_id"] = "rail-left-01 (right 복제)"
+    left["_mirrored_from"] = "right"
+    risk = right.get("rail_risk")
+    if isinstance(risk, list):
+        mirrored_risk = [float(v) for v in risk]
+        left["rail_risk"] = mirrored_risk
+        rail_risk_state["left"] = list(mirrored_risk)
+
+    out = dict(snapshot)
+    out["left"] = left
+    out["mirror_right_to_left"] = True
+    latest_ws_payload_by_side["left"] = left
+    return out
 
 
 async def enqueue_sensor_item(item: dict) -> None:
@@ -695,6 +564,8 @@ async def mqtt_subscriber(stop_event: asyncio.Event) -> None:
         clean_session=False,
         protocol=mqtt.MQTTv311,
     )
+    global mqtt_command_client
+    mqtt_command_client = client
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.reconnect_delay_set(min_delay=1, max_delay=30)
     if MQTT_TLS:
@@ -766,58 +637,47 @@ async def mqtt_subscriber(stop_event: asyncio.Event) -> None:
 
 
 # ─────────────────────────────────────────────
-#  시연용 더미 센서 샘플 생성 (1m 플라스틱 크레인)
+#  시연용 더미 센서 샘플 생성 (축소 레일 위 갠트리 주행)
 # ─────────────────────────────────────────────
-def generate_crane_demo_sample(distance_x: float) -> dict:
+def demo_levels(lap: int) -> tuple[float, float, float]:
+    """같은 구간을 다시 지날수록 결함이 커지는 시연용 크기. 화면에는 시뮬레이션으로 표시한다."""
+    step = max(lap - 1, 0)
+    return 1.2 + 0.35 * step, 1.3 + 0.35 * step, 6.0 + 0.40 * step
+
+
+def generate_crane_demo_sample(distance_x: float, side: str, lap: int) -> dict:
     """
-    distance_x(cm) 위치에 따른 정상/위험 구간 센서 값을 생성한다.
+    1m 레일의 세 구간을 서로 다른 지문으로 만든다.
 
-    - 정상(0~40, 50~100): 미세 노이즈 → CREST ≈ 1.0~1.5
-    - 위험(40~50, 중심 45cm): 단차 충격 피크 → CREST ≥ 5.0
+    - 20~25cm 이음부 단차: 양쪽 간격이 짧게 뛰고 세로 가속도가 튄다
+    - 45~70cm 수직 변형: 양쪽 간격만 완만히 늘고 충격은 없다
+    - 80~90cm 좌우 높이차: 왼쪽 간격만 늘고 기울기 부호가 같다
     """
-    in_danger = DEMO_DANGER_START_CM <= distance_x <= DEMO_DANGER_END_CM
-
-    if in_danger:
-        # 45cm 중심 가우시안 충격 엔벨로프 (0~1)
-        impact = float(np.exp(-0.5 * ((distance_x - DEMO_DANGER_CENTER_CM) / 2.0) ** 2))
-        peak_g = 0.5 + 0.5 * impact  # 0.5g ~ 1.0g
-
-        roll_deg = float(np.random.uniform(-10.0, 10.0) * max(impact, 0.4))
-        pitch_deg = float(np.random.uniform(-10.0, 10.0) * max(impact, 0.4))
-
-        accel_x = float(
-            np.sin(np.radians(roll_deg)) * G_MS2
-            + np.random.normal(0.0, 0.05)
-        )
-        accel_y = float(
-            np.sin(np.radians(pitch_deg)) * G_MS2
-            + np.random.normal(0.0, 0.05)
-        )
-        accel_z = float(
-            9.8 + peak_g * G_MS2 + np.random.normal(0.0, 0.1)
-        )
-
-        gx = float(np.radians(roll_deg) + np.random.normal(0.0, 0.02))
-        gy = float(np.radians(pitch_deg) + np.random.normal(0.0, 0.02))
-        gz = float(np.random.normal(0.0, 0.05))
-        sensor_distance_mm = float(
-            4.0 + 0.8 * impact + np.random.normal(0.0, 0.02)
-        )
-
-        # 위험 임계치 5.0 이상으로 치솟도록 시연용 파고율 지정
-        demo_crest = float(5.0 + 3.0 * impact + np.random.uniform(0.0, 1.0))
+    joint_mm, vertical_mm, cross_mm = demo_levels(lap)
+    gap = 4.0
+    accel_x = 0.0
+    accel_z = G_MS2
+    if DEMO_JOINT_CM[0] <= distance_x < DEMO_JOINT_CM[1]:
+        risen = 1.0 if distance_x >= DEMO_JOINT_CM[0] + 1.0 else 0.0
+        gap = 4.0 + joint_mm * risen
+        if DEMO_JOINT_CM[0] <= distance_x <= DEMO_JOINT_CM[0] + 1.5:
+            accel_z = G_MS2 + 8.0
+    elif DEMO_VERTICAL_CM[0] <= distance_x <= DEMO_VERTICAL_CM[1]:
+        span = DEMO_VERTICAL_CM[1] - DEMO_VERTICAL_CM[0]
+        gap = 4.0 + vertical_mm * ((distance_x - DEMO_VERTICAL_CM[0]) / span)
+    elif DEMO_CROSS_CM[0] <= distance_x <= DEMO_CROSS_CM[1]:
+        if side == "left":
+            gap = 4.0 + cross_mm
+        roll_deg = 4.0
+        accel_x = float(np.sin(np.radians(roll_deg)) * G_MS2)
+        accel_z = float(np.cos(np.radians(roll_deg)) * G_MS2)
     else:
-        # 정상 주행: 거의 0에 가까운 미세 가우시안 노이즈
-        accel_x = float(np.random.normal(0.0, 0.005))
-        accel_y = float(np.random.normal(0.0, 0.005))
-        accel_z = float(9.8 + np.random.normal(0.0, 0.005))
-        gx = float(np.random.normal(0.0, 0.005))
-        gy = float(np.random.normal(0.0, 0.005))
-        gz = float(np.random.normal(0.0, 0.005))
-        sensor_distance_mm = float(4.0 + np.random.normal(0.0, 0.01))
-        # 정상 범위 파고율 1.0~1.5
-        demo_crest = float(np.random.uniform(1.05, 1.45))
+        gap = float(4.0 + np.random.normal(0.0, 0.01))
+        accel_x = float(np.random.normal(0.0, 0.01))
+        accel_z = float(G_MS2 + np.random.normal(0.0, 0.01))
 
+    accel_y = float(np.random.normal(0.0, 0.01))
+    sensor_distance_mm = float(gap)
     sensor_voltage_v = float(
         np.clip((sensor_distance_mm - 1.0) / 7.0 * 10.0, 0.0, 10.0)
     )
@@ -831,10 +691,9 @@ def generate_crane_demo_sample(distance_x: float) -> dict:
         "accel_x": accel_x,
         "accel_y": accel_y,
         "accel_z": accel_z,
-        "gyro_x": gx,
-        "gyro_y": gy,
-        "gyro_z": gz,
-        "_demo_crest_target": demo_crest,
+        "gyro_x": float(np.random.normal(0.0, 0.005)),
+        "gyro_y": float(np.random.normal(0.0, 0.005)),
+        "gyro_z": float(np.random.normal(0.0, 0.005)),
         "_source": "demo",
     }
 
@@ -844,24 +703,29 @@ def generate_crane_demo_sample(distance_x: float) -> dict:
 # ─────────────────────────────────────────────
 async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     """
-    ESP32 미연결 시 1m 플라스틱 크레인 시연용 더미 데이터를 10Hz로 생성한다.
-    Consumer가 RBF 추론 후 WebSocket으로 left/right 레일 페이로드를 전송한다.
+    ESP32 미연결 시 1m 축소 레일 위 갠트리 주행 더미 데이터를 10Hz로 생성한다.
+    Consumer가 규칙 판정 후 WebSocket으로 left/right 페이로드를 전송한다.
     """
     logger.info(
-        "더미 스트리머 시작 (시연 모드): %.0fcm 레일, %.0fHz, 위험구간 %s~%scm (좌/우 독립)",
+        "더미 스트리머 시작 (시연 모드): %.0fcm 레일, %.0fHz, 이음부 %.0f~%.0fcm / 수직 %.0f~%.0fcm / 좌우높이 %.0f~%.0fcm",
         DEMO_RAIL_LENGTH_CM,
         1.0 / DEMO_HZ_INTERVAL,
-        DEMO_DANGER_START_CM,
-        DEMO_DANGER_END_CM,
+        DEMO_JOINT_CM[0],
+        DEMO_JOINT_CM[1],
+        DEMO_VERTICAL_CM[0],
+        DEMO_VERTICAL_CM[1],
+        DEMO_CROSS_CM[0],
+        DEMO_CROSS_CM[1],
     )
 
     distance_x = 0.0
     sample_seq = 1
+    lap = 1
 
     while not stop_event.is_set():
         ts = time.time()
-        left = generate_crane_demo_sample(distance_x)
-        right = generate_crane_demo_sample(distance_x)
+        left = generate_crane_demo_sample(distance_x, "left", lap)
+        right = generate_crane_demo_sample(distance_x, "right", lap)
         for side, sample in (("left", left), ("right", right)):
             sample.update(
                 {
@@ -879,19 +743,29 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
             )
 
         await enqueue_sensor_item({"left": left, "right": right, "source": "demo"})
+        record_sensor_node_batch(left)
+        record_sensor_node_batch(right)
 
-        zone = "DANGER" if DEMO_DANGER_START_CM <= distance_x <= DEMO_DANGER_END_CM else "OK"
+        zone = "OK"
+        if DEMO_JOINT_CM[0] <= distance_x < DEMO_JOINT_CM[1]:
+            zone = "JOINT"
+        elif DEMO_VERTICAL_CM[0] <= distance_x <= DEMO_VERTICAL_CM[1]:
+            zone = "VERTICAL"
+        elif DEMO_CROSS_CM[0] <= distance_x <= DEMO_CROSS_CM[1]:
+            zone = "CROSS"
         logger.info(
-            "더미 → x=%.0fcm [%s] left_crest=%.2f right_crest=%.2f",
+            "더미 → lap=%d x=%.0fcm [%s] left_gap=%.2fmm right_gap=%.2fmm",
+            lap,
             distance_x,
             zone,
-            left["_demo_crest_target"],
-            right["_demo_crest_target"],
+            left["sensor_distance_mm"],
+            right["sensor_distance_mm"],
         )
 
         distance_x += 1.0
         if distance_x > DEMO_RAIL_LENGTH_CM:
             distance_x = 0.0
+            lap += 1
         sample_seq += 1
 
         await asyncio.sleep(DEMO_HZ_INTERVAL)
@@ -904,10 +778,9 @@ def build_influx_point(
     *,
     side: str,
     source: str,
-    pred_rail_deform: float | None,
-    crest: float | None,
+    evaluation: dict,
 ) -> Point:
-    """현재 센서 계약과 특징 공학 결과를 InfluxDB Point로 변환한다."""
+    """현재 센서 계약과 규칙 판정 결과를 InfluxDB Point로 변환한다."""
     device_id = str(sample.get("device_id") or f"{DEVICE_ID}-{side}")
     point = (
         Point(MEASUREMENT)
@@ -951,17 +824,21 @@ def build_influx_point(
         if isinstance(value, int) and not isinstance(value, bool):
             point = point.field(influx_field, value)
 
-    engineered = sample.get("_engineered_features")
-    if isinstance(engineered, dict):
-        for feature_name in FEATURE_NAMES:
-            value = engineered.get(feature_name)
-            if isinstance(value, (int, float)):
-                point = point.field(f"feature_{feature_name}", float(value))
-
-    if pred_rail_deform is not None:
-        point = point.field("pred_rail_deform", float(pred_rail_deform))
-    if crest is not None:
-        point = point.field("crest_factor", float(crest))
+    for key, influx_field in (
+        ("tilt_deg", "tilt_deg"),
+        ("roll_deg", "roll_deg"),
+        ("delta_mm", "delta_mm"),
+        ("distance_delta_mm", "distance_delta_mm"),
+        ("m_mm", "m_mm"),
+        ("dm_dx", "dm_dx"),
+        ("ddelta_dx", "ddelta_dx"),
+        ("apeak", "apeak"),
+        ("magnitude_mm", "magnitude_mm"),
+        ("score", "abnormal_score"),
+    ):
+        value = evaluation.get(key)
+        if isinstance(value, (int, float)):
+            point = point.field(influx_field, float(value))
 
     received_at = sample.get("_received_at")
     if isinstance(received_at, (int, float)) and received_at > 0:
@@ -1000,15 +877,23 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
 
             source, samples = split_rail_samples(data)
             side_payloads: dict[str, dict] = {}
+            if "left" in samples and "right" in samples:
+                evaluation = defect_engine.evaluate_pair(samples["left"], samples["right"])
+            elif samples:
+                side, sample = next(iter(samples.items()))
+                evaluation = defect_engine.evaluate_side(sample, side)
+            else:
+                evaluation = {"ready": False}
+
+            if evaluation.get("ready") and evaluation.get("motion"):
+                publish_motion_command(str(evaluation["motion"]))
 
             for side, sample in samples.items():
-                pred_rail_deform, crest = predict_rail_deform(sample, side)
                 point = build_influx_point(
                     sample,
                     side=side,
                     source=source,
-                    pred_rail_deform=pred_rail_deform,
-                    crest=crest,
+                    evaluation=evaluation,
                 )
 
                 if INFLUX_WRITE_ENABLED:
@@ -1020,20 +905,17 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
                             "InfluxDB 쓰기 실패 (건너뜀, %s): %s", side, exc
                         )
 
-                risk = normalize_risk(pred_rail_deform, crest)
-                position_mm = sample.get("position_mm")
-                position_cm = (
-                    float(position_mm) / 10.0
-                    if isinstance(position_mm, (int, float))
-                    else None
-                )
-                rail_risk = update_rail_risk(position_cm, risk, side)
+                risk_key = "rail_risk_left" if side == "left" else "rail_risk_right"
+                rail_risk = list(evaluation.get(risk_key) or rail_risk_state.get(side) or [])
+                if len(rail_risk) == RAIL_SEGMENT_COUNT:
+                    rail_risk_state[side] = rail_risk
+                defects = list(evaluation.get("defects") or [])
                 side_payloads[side] = build_side_ws_payload(
                     sample,
                     side=side,
-                    pred_rail_deform=pred_rail_deform,
-                    crest=crest,
+                    evaluation=evaluation,
                     rail_risk=rail_risk,
+                    defects=defects,
                 )
 
             await ws_manager.broadcast(
@@ -1050,9 +932,6 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # AI 모델 로드 (torch.load는 블로킹 I/O이므로 to_thread로 이벤트 루프 비블로킹)
-    await asyncio.to_thread(load_rbf_model, RBF_MODEL_PATH)
-
     stop_event = asyncio.Event()
     tasks: list[asyncio.Task] = []
     if DEMO_MODE:
@@ -1096,16 +975,15 @@ async def lifespan(app: FastAPI):
 #  FastAPI 앱
 # ─────────────────────────────────────────────
 app = FastAPI(
-    title="Crane Rail Deformation API",
-    description="갠트리 크레인 주행 진동 계측 및 하부 레일 변형(단차·침하·뒤틀림) 예측 서버",
-    version="0.3.0",
+    title="Crane Rail Monitoring API",
+    description="갠트리 크레인 주행 중 하부 레일 이상 구간 규칙 판정 서버",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 DASHBOARD_HTML = FRONTEND_DIR / "index.html"
 UNITY_STATIC = FRONTEND_DIR / "unity"
-mimetypes.add_type("application/wasm", ".wasm")
 
 
 # ─────────────────────────────────────────────
@@ -1133,9 +1011,10 @@ async def health_check():
             "ingest_queue_size": mqtt_ingest_queue.qsize(),
         },
         "sensor_nodes": sensor_node_state,
-        "ai_model_loaded": ml_state.get("model") is not None,
-        "ai_model_device": str(ml_state.get("device")) if ml_state.get("device") else None,
+        "rule_engine": True,
+        "unity_webgl": (UNITY_STATIC / "Build").is_dir(),
         "demo_mode": DEMO_MODE,
+        "mirror_right_to_left": MIRROR_RIGHT_TO_LEFT,
     }
 
 

@@ -1,13 +1,12 @@
 import unittest
-from collections import deque
 from pathlib import Path
 import re
 
 import main
-from ml.train_rbf_surrogate import FEATURE_NAMES, WINDOW_LEN
+from rail_defect import DefectRuleEngine, estimate_roll_deg
 
 
-def current_sample(position_mm: float = 450.0) -> dict:
+def current_sample(position_mm: float = 450.0, distance_mm: float = 4.2, accel_x: float = 0.1) -> dict:
     return {
         "_received_at": 1_735_000_000.0,
         "device_id": "rail-left-01",
@@ -20,11 +19,11 @@ def current_sample(position_mm: float = 450.0) -> dict:
         "dropped_batches": 0,
         "status_flags": 0,
         "position_mm": position_mm,
-        "sensor_distance_mm": 4.2,
+        "sensor_distance_mm": distance_mm,
         "adc_raw": 1000,
         "adc_voltage_v": 0.125,
         "sensor_voltage_v": 0.99,
-        "accel_x": 0.1,
+        "accel_x": accel_x,
         "accel_y": 0.2,
         "accel_z": 9.9,
         "gyro_x": 0.01,
@@ -33,58 +32,109 @@ def current_sample(position_mm: float = 450.0) -> dict:
     }
 
 
+def rail_pair(position_cm: float, gap_l: float, gap_r: float, accel_x: float = 0.0) -> tuple[dict, dict]:
+    stamp = 5_000.0 + position_cm
+    def one(gap: float) -> dict:
+        return {
+            "_received_at": stamp,
+            "position_mm": position_cm * 10.0,
+            "sensor_distance_mm": gap,
+            "accel_x": accel_x,
+            "accel_y": 0.0,
+            "accel_z": 9.80665,
+        }
+    return one(gap_l), one(gap_r)
+
+
 class PipelineTests(unittest.TestCase):
     def setUp(self) -> None:
-        main.feature_windows["left"] = {
-            "accel": deque(maxlen=WINDOW_LEN),
-            "gyro": deque(maxlen=WINDOW_LEN),
-            "distance": deque(maxlen=WINDOW_LEN),
-            "position_time": deque(maxlen=2),
-        }
+        main.reset_rail_risk_state()
+        main.latest_ws_payload_by_side.clear()
 
-    def test_feature_pipeline_uses_current_sensor_contract(self) -> None:
-        features, crest = main.preprocess_and_extract_features(
-            current_sample(), "left"
-        )
+    def test_roll_uses_accelerometer_tilt(self) -> None:
+        roll = estimate_roll_deg(1.0, 0.0, 9.8)
+        self.assertIsNotNone(roll)
+        self.assertGreater(abs(roll or 0.0), 0.0)
 
-        self.assertEqual(len(features), len(FEATURE_NAMES))
-        self.assertGreaterEqual(crest, 0.0)
-        self.assertNotIn("AAX", FEATURE_NAMES)
-        self.assertIn("distance_delta_mm", FEATURE_NAMES)
+    def test_four_classes_and_three_stages(self) -> None:
+        engine = DefectRuleEngine(segment_count=20, rail_length_cm=100.0)
+        seen = set()
+        motions = set()
+        for lap in (1, 2, 3):
+            for x in range(0, 101):
+                left = main.generate_crane_demo_sample(float(x), "left", lap)
+                right = main.generate_crane_demo_sample(float(x), "right", lap)
+                stamp = 1_000.0 + lap * 30.0 + x * 0.1
+                left["_received_at"] = stamp
+                right["_received_at"] = stamp
+                snapshot = engine.evaluate_pair(left, right)
+                seen.add(snapshot["defect_type"])
+                motions.add(snapshot["motion"])
+        self.assertIn("joint_step", seen)
+        self.assertIn("vertical", seen)
+        self.assertIn("cross_level", seen)
+        self.assertIn("stop", motions)
+        self.assertIn("slow", motions)
+        types = {item["defect_type"] for item in engine.defect_list()}
+        self.assertIn("joint_step", types)
+        self.assertTrue(any(item.get("remaining_s") is not None for item in engine.defect_list()))
 
-    def test_downlink_preserves_position_and_risk_contract(self) -> None:
+    def test_cross_level_needs_tilt_agreement(self) -> None:
+        engine = DefectRuleEngine(segment_count=20, rail_length_cm=100.0)
+        for x in range(0, 15):
+            engine.evaluate_pair(*rail_pair(x, 4.0, 4.0))
+        disagreed = engine.evaluate_pair(*rail_pair(82, 10.0, 4.0, accel_x=-2.0))
+        self.assertNotEqual(disagreed["defect_type"], "cross_level")
+
+    def test_downlink_has_defects_not_pred(self) -> None:
         sample = current_sample()
-        sample["_engineered_features"] = {
-            name: float(index) for index, name in enumerate(FEATURE_NAMES)
+        evaluation = {
+            "roll_deg": 6.0,
+            "distance_delta_mm": 0.8,
+            "roll_delta_deg": 5.0,
+            "score": 0.7,
+            "abnormal": True,
         }
         payload = main.build_side_ws_payload(
             sample,
             side="left",
-            pred_rail_deform=2.5,
-            crest=3.0,
+            evaluation=evaluation,
             rail_risk=[0.0, 0.5],
+            defects=[{
+                "side": "both",
+                "from_mm": 200.0,
+                "to_mm": 250.0,
+                "defect_type": "joint_step",
+                "stage": "danger",
+            }],
         )
 
         self.assertEqual(payload["distance_x"], 45.0)
         self.assertEqual(payload["position_mm"], 450.0)
         self.assertEqual(payload["sensor_distance_mm"], 4.2)
-        self.assertEqual(payload["PRED_RAIL_DEFORM"], 2.5)
-        self.assertEqual(payload["rail_risk"], [0.0, 0.5])
-        self.assertEqual(payload["boot_id"], "a1b2c3d4")
+        self.assertEqual(payload["abnormal_score"], 0.7)
+        self.assertEqual(payload["defects"][0]["defect_type"], "joint_step")
+        self.assertEqual(payload["defects"][0]["from_mm"], 200.0)
+        self.assertNotIn("PRED_RAIL_DEFORM", payload)
+        self.assertNotIn("CREST", payload)
         self.assertNotIn("DIST", payload)
         self.assertNotIn("AAX", payload)
 
     def test_influx_line_protocol_contains_current_fields(self) -> None:
         sample = current_sample()
-        sample["_engineered_features"] = {
-            name: float(index) for index, name in enumerate(FEATURE_NAMES)
-        }
         point = main.build_influx_point(
             sample,
             side="left",
             source="mqtt",
-            pred_rail_deform=2.5,
-            crest=3.0,
+            evaluation={
+                "tilt_deg": 4.0,
+                "roll_deg": 4.0,
+                "delta_mm": 6.0,
+                "distance_delta_mm": 6.0,
+                "m_mm": 0.2,
+                "apeak": 0.1,
+                "score": 0.6,
+            },
         )
         line = point.to_line_protocol()
 
@@ -93,7 +143,10 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("position_mm=450", line)
         self.assertIn("sensor_distance_mm=4.2", line)
         self.assertIn("mpu_accel_x=0.1", line)
-        self.assertIn("pred_rail_deform=2.5", line)
+        self.assertIn("abnormal_score=0.6", line)
+        self.assertIn("delta_mm=6", line)
+        self.assertIn("apeak=0.1", line)
+        self.assertNotIn("pred_rail_deform", line)
         self.assertNotIn("adxl_accel", line)
 
     def test_frontend_referenced_ids_exist(self) -> None:
@@ -108,9 +161,15 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("ESP32 MQTT", html)
         self.assertIn("chart-seq", declared_ids)
         self.assertIn("node-left-badge", declared_ids)
+        self.assertIn("unity-canvas", declared_ids)
+        self.assertIn("이음부 단차", html)
+        self.assertNotIn("PRED_RAIL_DEFORM", html)
+        self.assertNotIn("Godot", html)
 
     def test_combines_independent_left_and_right_nodes(self) -> None:
         main.latest_ws_payload_by_side.clear()
+        main.sensor_node_state.clear()
+        main.sensor_node_state["left"] = {"connected": True}
         left = {"device_id": "rail-left-01", "rail_side": "left"}
         right = {"device_id": "rail-right-01", "rail_side": "right"}
 
