@@ -40,7 +40,10 @@ constexpr uint32_t MOTOR_PWM_FREQ_HZ = 5'000;
 // extended. DEMO_DRIVE_LENGTH_MM scaled 700mm/20s -> 1050mm/30s to keep the
 // same assumed speed for the dashboard's uncalibrated position estimate.
 constexpr uint8_t MOTOR_PWM_DUTY = 180;
-// Used only while the encoder is uncalibrated, so Godot can track the run.
+constexpr uint8_t MOTOR_SLOW_DUTY = 70;
+// 통신이 끊겨도 세로 충격이 이 값(m/s², 중력 제외)을 넘으면 보드가 직접 멈춘다.
+constexpr float LOCAL_STOP_DYNAMIC_Z = 4.0f;
+// Used only while the encoder is uncalibrated, so the dashboard can track the run.
 constexpr float DEMO_DRIVE_LENGTH_MM = 1'050.0f;
 
 constexpr uint8_t ADS1115_ADDRESS = 0x48;
@@ -65,7 +68,7 @@ constexpr float SENSOR_OUTPUT_MAX_V = 10.0f;
 constexpr float SENSOR_DISTANCE_MIN_MM = 1.0f;
 constexpr float SENSOR_DISTANCE_MAX_MM = 8.0f;
 
-constexpr char FIRMWARE_VERSION[] = "0.4.0";
+constexpr char FIRMWARE_VERSION[] = "0.5.0";
 
 // Public NCP endpoint. No hostname/TLS until a new domain is issued.
 constexpr char MQTT_HOST[] = "223.130.128.198";
