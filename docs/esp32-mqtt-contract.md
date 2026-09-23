@@ -83,13 +83,23 @@ FastAPI는 `railtwin-backend` 계정으로 구독만 한다. 두 장치는 같�
 - `gyro_radps`: MPU6050 자이로 X/Y/Z, 단위 rad/s.
 - `status_flags`: MPU6050/ADS1115 연결 실패와 엔코더/LR18 미교정 상태를 나타내는 비트 마스크.
 
-`sensor_distance_mm`는 센서와 금속 사이의 거리이며 곧바로 레일 변형 예측값을 뜻하지 않는다. 기준 거리와 설치 오차를 교정하고 특징 공학·RBF 추론을 거친 출력은 `PRED_RAIL_DEFORM`이다.
+`sensor_distance_mm`는 센서와 금속 사이의 거리이며 곧바로 레일 변형량이 아니다. 서버가 좌·우 간격을 묶어 `m`, `Δ`와 충격 `apeak`, 기울기 `tilt_deg`로 이음부 단차·수직 변형·좌우 높이차를 판정한다.
 
 토픽의 `{device_id}`와 JSON `device_id`가 다르면 FastAPI는 메시지를 버린다.
 
+## 속도 명령
+
+서버는 단계가 바뀌면 `rail/v1/nodes/{device_id}/command`에 QoS 1로 발행한다.
+
+```json
+{"motion": "cruise"}
+```
+
+`motion`은 `cruise`, `slow`, `stop`이다. ESP32는 이 명령을 받기 전에도 세로 가속도가 중력 대비 4 m/s²를 넘으면 스스로 멈춘다.
+
 ## ACK와 유실
 
-MQTT QoS 1의 PUBACK는 브로커 수락을 뜻하며 AI 처리나 InfluxDB 저장 완료를 뜻하지 않는다. FastAPI는 `(device_id, rail_side, boot_id)` 단위로 `batch_seq`를 추적해 재전송 중복을 제거한다.
+MQTT QoS 1의 PUBACK는 브로커 수락을 뜻하며 규칙 판정이나 InfluxDB 저장 완료를 뜻하지 않는다. FastAPI는 `(device_id, rail_side, boot_id)` 단위로 `batch_seq`를 추적해 재전송 중복을 제거한다.
 
 브로커에 연결되지 않은 동안 펌웨어는 미발행 배치를 제한된 RAM Queue에 보관한다. 초과 시 가장 오래된 배치를 버리며 `dropped_batches`를 증가시킨다. 브로커는 FastAPI가 잠시 내려간 동안 QoS 1 메시지를 보관할 수 있다.
 
@@ -99,4 +109,4 @@ MQTT QoS 1의 PUBACK는 브로커 수락을 뜻하며 AI 처리나 InfluxDB 저�
 - ADS1115: 20Hz
 - 전송: IMU 10샘플을 한 배치로 묶어 10Hz
 
-서버는 32샘플 롤링 창에서 웨이블릿 디노이징, RMS, Peak-to-Peak, 파고율, 자이로 특징, LR18 거리 변화, 엔코더 속도를 계산한다.
+서버는 좌·우 샘플을 구간으로 모아 네 분류를 판정한다. 웨이블릿·파고율은 쓰지 않는다. 채널당 200Hz를 넘겨 샘플링해도 LR18 응답은 100Hz이므로 새 정보가 늘지 않는다.
