@@ -30,6 +30,13 @@ build/
 .cursor/
 *.code-workspace
 
+# Unity
+unity/RailTwinRails/Library/
+unity/RailTwinRails/Temp/
+unity/RailTwinRails/Logs/
+unity/RailTwinRails/UserSettings/
+unity-webgl-build.log
+
 # For KiCAD & FreeCAD
 *.zip
 *.FCBak

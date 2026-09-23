@@ -22,7 +22,11 @@ public class RailTwinController : MonoBehaviour
 
     void Start()
     {
-        BuildRails();
+        // ApplyState가 Start보다 먼저 오면 이미 만들어 둔 막대를 다시 만들지 않는다.
+        if (_left == null)
+        {
+            BuildRails();
+        }
     }
 
     public void ApplyState(string json)
@@ -61,24 +65,24 @@ public class RailTwinController : MonoBehaviour
 
     void RebuildRails()
     {
-        DestroyChild("RailLeft");
-        DestroyChild("RailRight");
-        DestroyChild("GantryMarker");
         BuildRails();
     }
 
-    void DestroyChild(string name)
+    void DestroyNamed(string name)
     {
         Transform child = transform.Find(name);
-        if (child == null)
+        while (child != null)
         {
-            return;
+            DestroyImmediate(child.gameObject);
+            child = transform.Find(name);
         }
-        DestroyImmediate(child.gameObject);
     }
 
     void BuildRails()
     {
+        DestroyNamed("RailLeft");
+        DestroyNamed("RailRight");
+        DestroyNamed("GantryMarker");
         _left = MakeRail("RailLeft", -railGap * 0.5f);
         _right = MakeRail("RailRight", railGap * 0.5f);
         var marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
