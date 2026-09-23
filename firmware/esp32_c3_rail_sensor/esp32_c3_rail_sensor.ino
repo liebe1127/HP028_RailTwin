@@ -2,7 +2,9 @@
  * ESP32-C3 rail sensor firmware
  *
  * MPU-6050 + ADS1115/LR18-08U + wheel encoder + L298N demo drive
- * Boot: motor forward 10s while sampling. 단차 impact is sent live over MQTT.
+ * Boot: motor forward while sampling.
+ * 세로 충격이 LOCAL_STOP_DYNAMIC_Z를 넘으면 서버와 상관없이 모터를 멈춘다.
+ * 서버 명령 토픽 .../command 의 motion=cruise|slow|stop 으로 속도를 바꾼다.
  * 100 Hz acquisition -> 10-sample JSON batch -> WiFi MQTT QoS 1 publish
  *
  * Serial is used only for local diagnostics. It is not part of the data path.
@@ -73,6 +75,9 @@ uint32_t lastWifiAttemptMs = 0;
 bool wifiJoinLogged = false;
 bool motorRunning = false;
 uint32_t motorStartedMs = 0;
+volatile bool localStopLatched = false;
+volatile uint8_t pendingMotion = 0;
+volatile bool motionPending = false;
 
 int16_t latestAdcRaw = 0;
 float latestAdcVoltageV = 0.0f;
@@ -87,6 +92,7 @@ char bootId[9] = "";
 String mqttBrokerUri;
 String mqttTelemetryTopic;
 String mqttStatusTopic;
+String mqttCommandTopic;
 String mqttOnlinePayload;
 String mqttOfflinePayload;
 
@@ -307,13 +313,35 @@ String buildNodeStatusPayload(const char *status) {
   return payload;
 }
 
+void onMotionCommand(const std::string &topic, const std::string &payload);
+
 void onMqttConnect(esp_mqtt_client_handle_t client) {
   mqttClient.publish(
       mqttStatusTopic.c_str(),
       mqttOnlinePayload.c_str(),
       MQTT_QOS,
       true);
+  mqttClient.subscribe(mqttCommandTopic.c_str(), onMotionCommand, MQTT_QOS);
   Serial.println("[MQTT] connected");
+}
+
+void onMotionCommand(const std::string &topic, const std::string &payload) {
+  (void)topic;
+  DynamicJsonDocument document(192);
+  if (deserializeJson(document, payload) != DeserializationError::Ok) {
+    return;
+  }
+  const char *motion = document["motion"] | "";
+  if (strcmp(motion, "stop") == 0) {
+    pendingMotion = 2;
+  } else if (strcmp(motion, "slow") == 0) {
+    pendingMotion = 1;
+  } else if (strcmp(motion, "cruise") == 0) {
+    pendingMotion = 0;
+  } else {
+    return;
+  }
+  motionPending = true;
 }
 
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -436,6 +464,10 @@ void configureMqtt() {
   mqttStatusTopic += "/";
   mqttStatusTopic += DEVICE_ID;
   mqttStatusTopic += "/status";
+  mqttCommandTopic = MQTT_TOPIC_PREFIX;
+  mqttCommandTopic += "/";
+  mqttCommandTopic += DEVICE_ID;
+  mqttCommandTopic += "/command";
   mqttOnlinePayload = buildNodeStatusPayload("online");
   mqttOfflinePayload = buildNodeStatusPayload("offline");
 
@@ -482,7 +514,43 @@ void startMotorForward() {
       static_cast<unsigned>(MOTOR_PWM_DUTY));
 }
 
+void applyPendingMotion() {
+  if (localStopLatched) {
+    if (motorRunning) {
+      stopMotor();
+    }
+    return;
+  }
+  if (!motionPending || !motorRunning) {
+    return;
+  }
+  motionPending = false;
+  const uint8_t motion = pendingMotion;
+  if (motion == 2) {
+    stopMotor();
+    return;
+  }
+  ledcWrite(PIN_MOTOR_ENA, motion == 1 ? MOTOR_SLOW_DUTY : MOTOR_PWM_DUTY);
+}
+
+void noteLocalSafety(const SensorSample &sample) {
+  if (!sample.imuValid || localStopLatched) {
+    return;
+  }
+  const float dynamicZ = fabsf(sample.accelMps2[2] - 9.80665f);
+  if (dynamicZ < LOCAL_STOP_DYNAMIC_Z) {
+    return;
+  }
+  localStopLatched = true;
+  stopMotor();
+  Serial.printf("[MOTOR] local safety stop az=%.2f\n", dynamicZ);
+}
+
 void updateMotor() {
+  applyPendingMotion();
+  if (localStopLatched) {
+    return;
+  }
   if (!motorRunning) {
     if (motorStartedMs == 0 && millis() >= MOTOR_START_DELAY_MS) {
       startMotorForward();
@@ -573,7 +641,9 @@ void loop() {
   const uint64_t nowUs = esp_timer_get_time();
   if (nowUs - lastSampleUs >= SAMPLE_INTERVAL_US) {
     lastSampleUs += SAMPLE_INTERVAL_US;
-    sampleBatch[sampleCount++] = captureSample(nowUs);
+    SensorSample sample = captureSample(nowUs);
+    noteLocalSafety(sample);
+    sampleBatch[sampleCount++] = sample;
     if (sampleCount == SAMPLES_PER_BATCH) {
       queueBatch();
     }

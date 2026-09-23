@@ -53,7 +53,7 @@ cp node_profile.right.h.example node_profile.h
 
 Never upload the left profile to both boards. The broker authenticates each node as `device_id`, and the server uses the combination of `device_id`, `rail_side`, and per-reboot `boot_id` for independent duplicate detection.
 
-With zero node encoder counts per revolution, the 10-second motor run reports a clock-based `position_mm` so the dashboard and Godot can follow the demo pass. Calibrated encoder counts replace that estimate.
+With zero node encoder counts per revolution, the motor run reports a clock-based `position_mm` so the dashboard can follow the demo pass. Calibrated encoder counts replace that estimate. A vertical shock above the local limit stops the motor even if the server command does not arrive.
 
 Without calibrated LR18 conversion, `sensor_distance_mm` is still sent as a nominal 0–10V to 1–8mm map when ADS1115 is ready; `status_flags` keeps the uncalibrated bit set.
 
