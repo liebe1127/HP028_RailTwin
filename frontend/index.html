@@ -62,14 +62,6 @@
       0%, 100% { opacity: 1; }
       50% { opacity: 0.35; }
     }
-    .stage-pulse { box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.35); }
-    .stage-pulse.on {
-      animation: pingring 0.45s ease-out;
-    }
-    @keyframes pingring {
-      0% { box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.45); }
-      100% { box-shadow: 0 0 0 12px rgba(45, 212, 191, 0); }
-    }
     .log-line { border-bottom: 1px solid #1c273a; }
     .crane-track {
       position: relative;
@@ -79,15 +71,15 @@
       border: 1px solid var(--line);
       overflow: hidden;
     }
-    .crane-danger {
+    .zone-joint, .zone-vertical, .zone-cross {
       display: none;
       position: absolute;
       top: 0; bottom: 0;
-      left: 40%;
-      width: 10%;
-      background: rgba(244, 63, 94, 0.22);
     }
-    .crane-danger.show { display: block; }
+    .zone-joint { left: 20%; width: 5%; background: rgba(244, 63, 94, 0.28); }
+    .zone-vertical { left: 45%; width: 25%; background: rgba(234, 179, 8, 0.22); }
+    .zone-cross { left: 80%; width: 10%; background: rgba(168, 85, 247, 0.28); }
+    .zone-joint.show, .zone-vertical.show, .zone-cross.show { display: block; }
     .crane-dot {
       position: absolute;
       top: 50%;
@@ -128,8 +120,8 @@
   <header class="flex flex-wrap items-start justify-between gap-4 mb-6">
     <div>
       <p class="text-xs tracking-[0.2em] uppercase text-slate-500 mb-1">실시간 파이프라인</p>
-      <h1 id="page-title" class="text-2xl md:text-3xl font-semibold tracking-tight">ESP32 MQTT → AI 추론 → Godot</h1>
-      <p id="page-subtitle" class="text-sm text-slate-400 mt-2">좌·우 노드 배치를 서버가 구독해 화면에 그립니다</p>
+      <h1 id="page-title" class="text-2xl md:text-3xl font-semibold tracking-tight">ESP32 MQTT → 규칙 판정 → Unity</h1>
+      <p id="page-subtitle" class="text-sm text-slate-400 mt-2">갠트리 크레인이 레일을 지날 때 이상 구간을 표시합니다</p>
     </div>
     <div class="panel px-4 py-3 flex items-center gap-3 min-w-[220px]">
       <span id="dot" class="w-2.5 h-2.5 rounded-full bg-rose-500 hz-live"></span>
@@ -150,8 +142,8 @@
       <div id="meta-mqtt" class="text-sm font-semibold">—</div>
     </div>
     <div class="panel p-3">
-      <div class="text-[11px] text-slate-500 mb-1">AI 모델</div>
-      <div id="meta-ai" class="text-sm font-semibold">—</div>
+      <div class="text-[11px] text-slate-500 mb-1">규칙 엔진</div>
+      <div id="meta-ai" class="text-sm font-semibold">4분류 규칙</div>
     </div>
     <div class="panel p-3">
       <div class="text-[11px] text-slate-500 mb-1">WebSocket 클라이언트</div>
@@ -205,6 +197,9 @@
           <span>가속도 크기 (덜컹)</span>
           <span id="chart-seq-label" class="mono">—</span>
         </div>
+        <p class="text-[11px] text-slate-400 leading-snug mb-2">
+          MPU-6050 세로 가속도입니다. 이음부 단차는 여기서 충격(apeak)이 튀고, 수직 변형은 조용합니다.
+        </p>
         <canvas id="chart-seq" class="spark"></canvas>
       </div>
       <div class="rounded-lg bg-slate-900/60 p-3">
@@ -212,13 +207,19 @@
           <span>GTRIC 거리</span>
           <span id="chart-rate-label" class="mono">—</span>
         </div>
+        <p class="text-[11px] text-slate-400 leading-snug mb-2">
+          좌·우 LR18 간격입니다. 양쪽이 함께 변하면 수직 변형, 한쪽만 변하면 좌우 높이차 후보입니다.
+        </p>
         <canvas id="chart-rate" class="spark"></canvas>
       </div>
       <div class="rounded-lg bg-slate-900/60 p-3">
         <div class="flex justify-between text-[11px] text-slate-500 mb-1">
-          <span>CREST L / PRED L</span>
+          <span>기울기 φ</span>
           <span id="chart-crest-label" class="mono">—</span>
         </div>
+        <p class="text-[11px] text-slate-400 leading-snug mb-2">
+          차체 기울기입니다. 좌우 간격 차 Δ와 부호가 같을 때만 좌우 높이차로 확정합니다.
+        </p>
         <canvas id="chart-crest" class="spark"></canvas>
       </div>
     </div>
@@ -226,7 +227,7 @@
 
   <section class="flex flex-col xl:flex-row xl:items-stretch gap-3 mb-6">
 
-    <article id="stage-1" class="panel p-4 flex-1 stage-pulse">
+    <article id="stage-1" class="panel p-4 flex-1 xl:flex-[1.15] xl:min-w-0">
       <div class="flex items-center justify-between mb-3">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage1)">단계 1</div>
@@ -242,7 +243,9 @@
           <span id="val-x" class="mono">—</span>
         </div>
         <div class="crane-track">
-          <div id="crane-danger" class="crane-danger" title="시연용 더미 위험 구간 40~50cm"></div>
+          <div id="zone-joint" class="zone-joint" title="시연: 이음부 단차 20~25cm"></div>
+          <div id="zone-vertical" class="zone-vertical" title="시연: 수직 변형 45~70cm"></div>
+          <div id="zone-cross" class="zone-cross" title="시연: 좌우 높이차 80~90cm"></div>
           <div id="crane-dot" class="crane-dot" style="left:0%"></div>
         </div>
       </div>
@@ -299,56 +302,58 @@
 
     <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
 
-    <article id="stage-2" class="panel p-4 flex-1 stage-pulse">
+    <article id="stage-2" class="panel p-4 flex-1 xl:flex-[0.95] xl:min-w-0">
       <div class="flex items-center justify-between mb-3">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage2)">단계 2</div>
-          <h2 class="text-lg font-semibold">AI 추론</h2>
+          <h2 class="text-lg font-semibold">이상 구간</h2>
         </div>
-        <span class="text-xs text-slate-500 mono">RBF · Crest</span>
+        <span class="text-xs text-slate-500 mono">m · Δ · apeak · φ</span>
       </div>
-      <p class="text-xs text-slate-400 mb-4">웨이블릿 디노이징 → 파고율 → 레일 변형 예측</p>
+      <p class="text-xs text-slate-400 mb-4">정상 / 이음부 단차 / 수직 변형 / 좌우 높이차. 단계는 한계선 50%·한계선으로 정상·주의·위험을 나눕니다.</p>
 
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
-          <div class="text-[10px] text-amber-400/80 mb-1">CREST LEFT</div>
-          <div id="val-crest-l" class="mono text-2xl font-semibold">—</div>
+          <div class="text-[10px] text-amber-400/80 mb-1">평균 간격 변화 m (mm)</div>
+          <div id="val-m" class="mono text-2xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
-            <div id="bar-crest-l" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
+            <div id="bar-m" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
         <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
-          <div class="text-[10px] text-amber-400/80 mb-1">CREST RIGHT</div>
-          <div id="val-crest-r" class="mono text-2xl font-semibold">—</div>
+          <div class="text-[10px] text-amber-400/80 mb-1">좌우 차 Δ (mm)</div>
+          <div id="val-delta" class="mono text-2xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
-            <div id="bar-crest-r" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
+            <div id="bar-delta" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
         <div class="rounded-lg border border-orange-900/40 bg-orange-950/20 p-3">
-          <div class="text-[10px] text-orange-300/80 mb-1">PRED LEFT</div>
-          <div id="val-pred-l" class="mono text-2xl font-semibold">—</div>
+          <div class="text-[10px] text-orange-300/80 mb-1">충격 apeak (m/s²)</div>
+          <div id="val-apeak" class="mono text-2xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
-            <div id="bar-pred-l" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
+            <div id="bar-apeak" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
         <div class="rounded-lg border border-orange-900/40 bg-orange-950/20 p-3">
-          <div class="text-[10px] text-orange-300/80 mb-1">PRED RIGHT</div>
-          <div id="val-pred-r" class="mono text-2xl font-semibold">—</div>
+          <div class="text-[10px] text-orange-300/80 mb-1">기울기 φ (°)</div>
+          <div id="val-tilt" class="mono text-2xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
-            <div id="bar-pred-r" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
+            <div id="bar-tilt" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
       </div>
-      <div class="text-[11px] text-slate-500">PRED_RAIL_DEFORM · 서버 RBF 모델 출력값 그대로 표시</div>
+      <div id="val-class" class="text-sm text-slate-200 mb-1">분류 대기…</div>
+      <div id="val-motion" class="text-[11px] text-slate-400 mb-2">동작 대기…</div>
+      <div id="defect-list" class="text-[11px] text-slate-400 leading-relaxed min-h-[2.5rem]">이상 구간 대기…</div>
     </article>
 
     <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
 
-    <article id="stage-3" class="panel p-4 flex-1 stage-pulse">
+    <article id="stage-3" class="panel p-4 flex-1 xl:flex-[1.4] xl:min-w-0">
       <div class="flex items-center justify-between mb-3 gap-2">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage3)">단계 3</div>
-          <h2 class="text-lg font-semibold">Godot 전송</h2>
+          <h2 class="text-lg font-semibold">Unity 레일</h2>
         </div>
         <div class="flex items-center gap-2">
           <button id="btn-reset-risk" type="button"
@@ -358,7 +363,13 @@
           <span id="broadcast-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
         </div>
       </div>
-      <p class="text-xs text-slate-400 mb-4">WebSocket 브로드캐스트 · 좌/우 rail_risk 히트맵 (누적값)</p>
+      <p class="text-xs text-slate-400 mb-3">같은 좌표로 좌·우 레일만 색을 바꿉니다. 크레인 모델은 넣지 않습니다.</p>
+      <div class="relative mb-3 rounded-lg overflow-hidden bg-slate-950 border border-slate-800" style="height:220px">
+        <canvas id="unity-canvas" class="absolute inset-0 w-full h-full" width="960" height="220" tabindex="-1"></canvas>
+        <canvas id="rail-fallback" class="absolute inset-0 w-full h-full"></canvas>
+        <div id="unity-status" class="absolute left-2 bottom-2 text-[10px] text-slate-500">레일 뷰</div>
+      </div>
+      <p class="text-xs text-slate-400 mb-4">초록 정상 · 노랑 주의(감속) · 빨강 위험(진입 전 정지). 더미 주행은 시뮬레이션입니다.</p>
 
       <div class="mb-3">
         <div class="text-[11px] text-slate-500 mb-1">LEFT rail_risk</div>
@@ -405,9 +416,19 @@
     const WS_URL = defaultWsUrl();
     const HTTP_BASE = defaultHttpBase();
     const RECONNECT_MS = 3000;
-    const CREST_MAX = 10;
-    const PRED_MAX = 40;
-    const X_MAX = 100;
+    const M_MAX = 3;
+    const DELTA_MAX = 10;
+    const APEAK_MAX = 8;
+    const TILT_MAX = 8;
+    const DEFECT_LABELS = {
+      normal: '정상',
+      joint_step: '이음부 단차',
+      vertical: '수직 변형',
+      cross_level: '좌우 높이차',
+    };
+    const STAGE_LABELS = { ok: '정상', caution: '주의', danger: '위험' };
+    const MOTION_LABELS = { cruise: '평속', slow: '감속 0.1 m/s', stop: '진입 전 정지' };
+    const FALLBACK_RAIL_CM = 100;
     const UI_MIN_MS = 80;
     const SPARK_POINTS = 90;
     const FLAG_BITS = [
@@ -427,20 +448,24 @@
     let pendingPayload = null;
     let paintTimer = null;
     let demoMode = null;
+    // 중간 시연: left ESP32가 없을 때 right 페이로드를 left UI에도 복제
+    const MIRROR_RIGHT_TO_LEFT = true;
+    let leftMirroredActive = false;
     const hzSamples = [];
     const sparkSeq = [];
     const sparkRate = [];
     const sparkCrest = [];
+    let unityInstance = null;
+    let unityTried = false;
 
     const riskLeftEl = document.getElementById('risk-left');
     const riskRightEl = document.getElementById('risk-right');
 
     function riskColor(v) {
       const r = Math.max(0, Math.min(1, Number(v) || 0));
-      if (r < 0.25) return `rgb(59, ${Math.round(130 + r * 80)}, 246)`;
-      if (r < 0.5) return `rgb(${Math.round(34 + (r - 0.25) * 400)}, 197, 94)`;
-      if (r < 0.75) return `rgb(234, ${Math.round(179 - (r - 0.5) * 200)}, 8)`;
-      return `rgb(244, ${Math.round(63 - (r - 0.75) * 40)}, 94)`;
+      if (r < 0.3) return 'rgb(34, 197, 94)';
+      if (r < 0.8) return 'rgb(234, 179, 8)';
+      return 'rgb(239, 68, 68)';
     }
 
     function ensureSegments(el, n) {
@@ -481,13 +506,6 @@
         document.getElementById('broadcast-badge').className =
           'text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400';
       }
-    }
-
-    function pulse(id) {
-      const el = document.getElementById(id);
-      el.classList.remove('on');
-      void el.offsetWidth;
-      el.classList.add('on');
     }
 
     function fmt(v, d = 2) {
@@ -610,11 +628,11 @@
           (node) => node && node.connected
         ).length;
         document.getElementById('page-title').textContent = demoMode
-          ? '더미 스트리머 → AI 추론 → Godot 전송'
-          : 'ESP32 MQTT → AI 추론 → Godot';
+          ? '더미 주행 → 규칙 판정 → Unity 레일'
+          : 'ESP32 MQTT → 규칙 판정 → Unity';
         document.getElementById('page-subtitle').textContent = demoMode
-          ? '시연용 합성 데이터입니다. DEMO_MODE=false면 실제 MQTT 노드가 표시됩니다'
-          : '좌·우 ESP32 배치를 Mosquitto에서 받아 화면에 그립니다';
+          ? '시연용 합성 데이터입니다. 갠트리 크레인이 레일을 지날 때의 이상 구간을 표시합니다'
+          : '좌·우 ESP32 배치를 받아 레일 이상 구간을 표시합니다';
         document.getElementById('meta-source').textContent = demoMode
           ? '더미 스트리머'
           : (liveNodes > 0
@@ -625,15 +643,38 @@
           ? '시연 모드'
           : (mqttConnected ? `연결 · 수신 ${mqttCount}` : '끊김');
         document.getElementById('meta-mqtt').style.color = (!demoMode && mqttConnected) ? 'var(--stage1)' : 'var(--muted)';
-        document.getElementById('meta-ai').textContent = h.ai_model_loaded
-          ? `로드됨 (${h.ai_model_device || 'cpu'})`
-          : '미로드';
-        document.getElementById('meta-ai').style.color = h.ai_model_loaded ? 'var(--stage2)' : 'var(--danger)';
+        document.getElementById('meta-ai').textContent = h.rule_engine
+          ? '4분류 규칙'
+          : '대기';
+        document.getElementById('meta-ai').style.color = h.rule_engine ? 'var(--stage2)' : 'var(--danger)';
         document.getElementById('meta-ws').textContent = String(c.connected_clients ?? h.ws_clients ?? '—');
         document.getElementById('meta-queue').textContent =
           `${h.queue_size ?? 0} / ${h.queue_max ?? '—'} · 수신 ${msgCount}`;
-        setNodeCard('left', (h.sensor_nodes || {}).left, null);
-        setNodeCard('right', (h.sensor_nodes || {}).right, null);
+        const leftNode = (h.sensor_nodes || {}).left;
+        const rightNode = (h.sensor_nodes || {}).right;
+        if (
+          MIRROR_RIGHT_TO_LEFT &&
+          rightNode &&
+          rightNode.connected &&
+          !(leftNode && leftNode.connected)
+        ) {
+          leftMirroredActive = true;
+          setNodeCard('left', null, {
+            device_id: 'rail-left-01 (right 복제)',
+            firmware_version: rightNode.firmware_version,
+            boot_id: rightNode.boot_id,
+            batch_seq: rightNode.last_batch_seq,
+            status_flags: rightNode.status_flags,
+          });
+          const leftBadge = document.getElementById('node-left-badge');
+          leftBadge.textContent = '시연 복제';
+          leftBadge.className =
+            'text-xs px-2 py-1 rounded-full border border-amber-700 text-amber-300';
+        } else {
+          leftMirroredActive = Boolean(leftNode && leftNode.connected);
+          setNodeCard('left', leftNode, null);
+        }
+        setNodeCard('right', rightNode, null);
       } catch (e) {
         /* 헬스 실패해도 WS만 되면 표시는 유지 */
       }
@@ -656,32 +697,60 @@
       if (Number.isFinite(voltage)) return voltage;
       return null;
     }
+
+    function applyPayload(data) {
       const source = data.source || (demoMode ? 'demo' : 'mqtt');
-      const left = data.left && typeof data.left === 'object' ? data.left : data;
-      const right = data.right && typeof data.right === 'object' ? data.right : null;
+      let left = data.left && typeof data.left === 'object' ? data.left : null;
+      let right = data.right && typeof data.right === 'object' ? data.right : null;
+      // 구형 flat 페이로드: left/right 없으면 전체를 양쪽에 적용
+      if (!left && !right) {
+        left = data;
+        right = data;
+      }
+
+      let mirrored = false;
+      const leftHasLive = Boolean(left && left.device_id);
+      const rightHasLive = Boolean(right && right.device_id);
+      // 중간 시연: right만 살아 있으면 left UI에 동일 값 복제 (상단 차트·단계 L 칸 포함)
+      if (MIRROR_RIGHT_TO_LEFT && rightHasLive && !leftHasLive) {
+        left = {
+          ...right,
+          rail_side: 'left',
+          device_id: 'rail-left-01 (right 복제)',
+          rail_risk: Array.isArray(right.rail_risk) ? right.rail_risk.slice() : right.rail_risk,
+          _mirrored_from: 'right',
+        };
+        mirrored = true;
+        leftMirroredActive = true;
+      } else {
+        left = left || {};
+        leftMirroredActive = false;
+      }
+
+      const chartSide = leftHasLive || mirrored ? left : right || left;
       const x = left.distance_x ?? (right && right.distance_x);
       const seq = left.sample_seq ?? (right && right.sample_seq);
 
-      pulse('stage-1');
-      pulse('stage-2');
-      pulse('stage-3');
       updateHz();
 
       const xn = Number(x);
       const hasPosition = Number.isFinite(xn);
       document.getElementById('val-x').textContent = hasPosition
         ? `${xn.toFixed(0)} cm`
-        : (left.position_mm == null ? '위치 없음' : '—');
-      document.getElementById('crane-danger').classList.toggle('show', source === 'demo');
+        : (chartSide.position_mm == null ? '위치 없음' : '—');
+      ['zone-joint', 'zone-vertical', 'zone-cross'].forEach((id) => {
+        document.getElementById(id).classList.toggle('show', source === 'demo' || data.simulation);
+      });
       if (hasPosition) {
-        document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / X_MAX) * 100)) + '%';
-        const mag = accelMag(left);
+        const span = railSpanCm(left, right);
+        document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / span) * 100)) + '%';
+        const mag = accelMag(chartSide);
         const badge = document.getElementById('zone-badge');
-        if (mag != null && mag >= 12) {
-          badge.textContent = '단차 충격';
+        if (mag != null && (Number(chartSide.abnormal_score) || 0) > 0) {
+          badge.textContent = '이상 구간';
           badge.className = 'text-xs px-2 py-1 rounded-full border border-rose-700 text-rose-300';
         } else {
-          badge.textContent = 'MQTT 수신';
+          badge.textContent = mirrored ? 'MQTT 수신 · L←R 복제' : 'MQTT 수신';
           badge.className = 'text-xs px-2 py-1 rounded-full border border-teal-800 text-teal-300';
         }
       } else {
@@ -706,22 +775,33 @@
           `${fmt(right.sensor_distance_mm, 3)} mm`;
       }
 
-      document.getElementById('val-crest-l').textContent = fmt(left.CREST);
-      setBar('bar-crest-l', left.CREST, CREST_MAX);
-      document.getElementById('val-pred-l').textContent = fmt(left.PRED_RAIL_DEFORM);
-      setBar('bar-pred-l', left.PRED_RAIL_DEFORM, PRED_MAX);
-      if (right) {
-        document.getElementById('val-crest-r').textContent = fmt(right.CREST);
-        setBar('bar-crest-r', right.CREST, CREST_MAX);
-        document.getElementById('val-pred-r').textContent = fmt(right.PRED_RAIL_DEFORM);
-        setBar('bar-pred-r', right.PRED_RAIL_DEFORM, PRED_MAX);
-      }
+      const featureSide = left.m_mm != null || left.delta_mm != null ? left : (right || left);
+      document.getElementById('val-m').textContent = fmt(featureSide.m_mm, 2);
+      setBar('bar-m', Math.abs(Number(featureSide.m_mm) || 0), M_MAX);
+      document.getElementById('val-delta').textContent = fmt(featureSide.delta_mm, 2);
+      setBar('bar-delta', Math.abs(Number(featureSide.delta_mm) || 0), DELTA_MAX);
+      document.getElementById('val-apeak').textContent = fmt(featureSide.apeak, 2);
+      setBar('bar-apeak', Math.abs(Number(featureSide.apeak) || 0), APEAK_MAX);
+      document.getElementById('val-tilt').textContent = fmt(featureSide.tilt_deg, 1);
+      setBar('bar-tilt', Math.abs(Number(featureSide.tilt_deg) || 0), TILT_MAX);
+      const typeName = DEFECT_LABELS[featureSide.defect_type] || '정상';
+      const stageName = STAGE_LABELS[featureSide.stage] || '정상';
+      document.getElementById('val-class').textContent = `${typeName} · ${stageName}`;
+      const motionName = MOTION_LABELS[data.motion || featureSide.motion] || '평속';
+      const remain = featureSide.remaining_s;
+      const remainText = typeof remain === 'number' && Number.isFinite(remain)
+        ? ` · 한계까지 ${remain.toFixed(0)}초` : '';
+      const simText = (source === 'demo' || data.simulation) ? ' · 시뮬레이션' : '';
+      document.getElementById('val-motion').textContent = `${motionName}${remainText}${simText}`;
 
       paintRisk(riskLeftEl, left.rail_risk);
       if (right) paintRisk(riskRightEl, right.rail_risk);
+      drawRailFallback(left, right, x, railSpanCm(left, right));
+      pushUnityState(left, right, x);
+      renderDefectList(left, right);
 
-      const mag = accelMag(left);
-      const gap = gapValue(left);
+      const mag = accelMag(chartSide);
+      const gap = gapValue(chartSide);
       if (Number.isFinite(Number(seq))) {
         document.getElementById('live-seq').textContent = String(seq);
       }
@@ -733,20 +813,28 @@
       if (gap != null) {
         pushSpark(sparkRate, gap);
         document.getElementById('chart-rate-label').textContent =
-          Number.isFinite(Number(left.sensor_distance_mm))
+          Number.isFinite(Number(chartSide.sensor_distance_mm))
             ? gap.toFixed(2) + ' mm'
             : gap.toFixed(2) + ' V';
         drawSpark('chart-rate', sparkRate, '#2dd4bf');
       }
-      if (left.CREST != null) {
-        pushSpark(sparkCrest, Number(left.CREST));
-        document.getElementById('chart-crest-label').textContent =
-          `${fmt(left.CREST)} / ${fmt(left.PRED_RAIL_DEFORM)}`;
+      const tilt = featureSide.tilt_deg != null ? featureSide.tilt_deg : chartSide.tilt_deg;
+      if (tilt != null) {
+        pushSpark(sparkCrest, Number(tilt));
+        document.getElementById('chart-crest-label').textContent = fmt(tilt, 1) + '°';
         drawSpark('chart-crest', sparkCrest, '#f59e0b');
       }
 
-      setNodeCard('left', null, left);
-      if (right) setNodeCard('right', null, right);
+      if (left && left.device_id) {
+        setNodeCard('left', null, left);
+        if (mirrored) {
+          const leftBadge = document.getElementById('node-left-badge');
+          leftBadge.textContent = '시연 복제';
+          leftBadge.className =
+            'text-xs px-2 py-1 rounded-full border border-amber-700 text-amber-300';
+        }
+      }
+      if (right && right.device_id) setNodeCard('right', null, right);
 
       const preview = {
         source,
@@ -757,9 +845,13 @@
           status_flags: left.status_flags,
           distance_x: left.distance_x,
           sensor_distance_mm: left.sensor_distance_mm,
-          sensor_voltage_v: left.sensor_voltage_v,
-          CREST: left.CREST,
-          PRED_RAIL_DEFORM: left.PRED_RAIL_DEFORM,
+          m_mm: left.m_mm,
+          delta_mm: left.delta_mm,
+          apeak: left.apeak,
+          tilt_deg: left.tilt_deg,
+          defect_type: left.defect_type,
+          stage: left.stage,
+          motion: data.motion || left.motion,
           dropped_batches: left.dropped_batches,
         },
         right: right
@@ -770,8 +862,10 @@
               status_flags: right.status_flags,
               distance_x: right.distance_x,
               sensor_distance_mm: right.sensor_distance_mm,
-              CREST: right.CREST,
-              PRED_RAIL_DEFORM: right.PRED_RAIL_DEFORM,
+              m_mm: right.m_mm,
+              delta_mm: right.delta_mm,
+              defect_type: right.defect_type,
+              stage: right.stage,
               dropped_batches: right.dropped_batches,
             }
           : null,
@@ -785,7 +879,7 @@
         document.getElementById('meta-queue').textContent.replace(/수신 \d+/, `수신 ${msgCount}`);
 
       pushLog(
-        `${source} seq=${seq ?? '—'} x=${fmt(x, 0)}cm · CREST L/R=${fmt(left.CREST)}/${fmt(right?.CREST)} · PRED L/R=${fmt(left.PRED_RAIL_DEFORM)}/${fmt(right?.PRED_RAIL_DEFORM)}`
+        `${source} seq=${seq ?? '—'} x=${fmt(x, 0)}cm · m=${fmt(featureSide.m_mm)} Δ=${fmt(featureSide.delta_mm)} · ${typeName}/${stageName}`
       );
     }
 
@@ -812,6 +906,150 @@
       }
     }
 
+    function renderDefectList(left, right) {
+      const el = document.getElementById('defect-list');
+      const items = []
+        .concat((left && left.defects) || [])
+        .concat((right && right.defects) || []);
+      if (!items.length) {
+        el.textContent = '이상 구간 없음';
+        return;
+      }
+      const seen = new Set();
+      el.textContent = items.filter((d) => {
+        const key = `${d.defect_type}:${d.from_mm}:${d.stage}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).map((d) => {
+        const name = DEFECT_LABELS[d.defect_type] || d.defect_type || '이상';
+        const stage = STAGE_LABELS[d.stage] || '';
+        const fromCm = Number.isFinite(Number(d.from_mm)) ? (Number(d.from_mm) / 10).toFixed(0) : '—';
+        const toCm = Number.isFinite(Number(d.to_mm)) ? (Number(d.to_mm) / 10).toFixed(0) : '—';
+        const side = d.side === 'left' ? '좌' : (d.side === 'right' ? '우' : '좌우');
+        return `${name}·${stage} ${side} ${fromCm}–${toCm}cm`;
+      }).join(' · ');
+    }
+
+    function railSpanCm(left, right) {
+      const candidates = [left && left.rail_length_cm, right && right.rail_length_cm];
+      for (let i = 0; i < candidates.length; i++) {
+        const n = Number(candidates[i]);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      return FALLBACK_RAIL_CM;
+    }
+
+    function segmentCountOf(left, right) {
+      const declared = Number((left && left.segment_count) || (right && right.segment_count));
+      if (Number.isFinite(declared) && declared > 0) return declared;
+      const risks = (left && Array.isArray(left.rail_risk) && left.rail_risk.length)
+        ? left.rail_risk
+        : (right && right.rail_risk);
+      return (risks && risks.length) || 20;
+    }
+
+    function drawRailFallback(left, right, x, spanCm) {
+      const canvas = document.getElementById('rail-fallback');
+      if (!canvas || unityInstance) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.max(1, canvas.clientWidth || 300);
+      const h = Math.max(1, canvas.clientHeight || 220);
+      if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, w, h);
+      const pad = 24;
+      const railH = 18;
+      const ys = [h * 0.38, h * 0.62];
+      const sides = [left, right];
+      sides.forEach((side, si) => {
+        const risks = (side && Array.isArray(side.rail_risk) && side.rail_risk.length)
+          ? side.rail_risk
+          : Array(segmentCountOf(left, right)).fill(0);
+        const n = risks.length;
+        const y = ys[si] - railH / 2;
+        for (let i = 0; i < n; i++) {
+          const x0 = pad + (i / n) * (w - pad * 2);
+          const x1 = pad + ((i + 1) / n) * (w - pad * 2);
+          ctx.fillStyle = riskColor(risks[i]);
+          ctx.fillRect(x0, y, Math.max(1, x1 - x0 - 1), railH);
+        }
+      });
+      if (Number.isFinite(Number(x))) {
+        const span = Number(spanCm) > 0 ? Number(spanCm) : FALLBACK_RAIL_CM;
+        const gx = pad + (Math.min(span, Math.max(0, Number(x))) / span) * (w - pad * 2);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillRect(gx - 4, ys[0] - 16, 8, ys[1] - ys[0] + 32);
+      }
+      ctx.fillStyle = '#64748b';
+      ctx.font = '11px sans-serif';
+      ctx.fillText('LEFT', pad, ys[0] - 14);
+      ctx.fillText('RIGHT', pad, ys[1] + railH + 16);
+    }
+
+    function unityStateJson(left, right, x) {
+      const pack = (side) => (side && Array.isArray(side.rail_risk) ? side.rail_risk : []).map(
+        (v) => Number(v) || 0
+      );
+      return JSON.stringify({
+        x: Number.isFinite(Number(x)) ? Number(x) : 0,
+        len: railSpanCm(left, right),
+        n: segmentCountOf(left, right),
+        l: pack(left),
+        r: pack(right),
+      });
+    }
+
+    function pushUnityState(left, right, x) {
+      if (!unityInstance) return;
+      try {
+        unityInstance.SendMessage('RailTwin', 'ApplyState', unityStateJson(left, right, x));
+      } catch (err) {
+        /* Unity 미연결 시 폴백 유지 */
+      }
+    }
+
+    async function loadUnity() {
+      if (unityTried) return;
+      unityTried = true;
+      const status = document.getElementById('unity-status');
+      try {
+        const loader = document.createElement('script');
+        loader.src = '/unity/Build/WebGL.loader.js';
+        await new Promise((resolve, reject) => {
+          loader.onload = resolve;
+          loader.onerror = reject;
+          document.head.appendChild(loader);
+        });
+        const canvas = document.getElementById('unity-canvas');
+        status.textContent = 'Unity 로딩…';
+        unityInstance = await createUnityInstance(canvas, {
+          dataUrl: '/unity/Build/WebGL.data',
+          frameworkUrl: '/unity/Build/WebGL.framework.js',
+          codeUrl: '/unity/Build/WebGL.wasm',
+          streamingAssetsUrl: '/unity/StreamingAssets',
+          companyName: 'RailTwin',
+          productName: 'RailTwinRails',
+          productVersion: '1.0',
+          matchWebGLToCanvasSize: true,
+          devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+          showBanner: (msg, type) => {
+            status.textContent = type === 'error' ? `Unity 오류: ${msg}` : (msg || status.textContent);
+          },
+        });
+        window.unityInstance = unityInstance;
+        document.getElementById('rail-fallback').style.display = 'none';
+        status.textContent = 'Unity WebGL';
+      } catch (err) {
+        status.textContent = '브라우저 레일 뷰 (Unity 빌드 대기)';
+      }
+    }
+
     function connect() {
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
@@ -822,6 +1060,7 @@
         setConnected(true);
         pushLog(`WS 연결: ${WS_URL}`);
         refreshHealth();
+        loadUnity();
       };
       ws.onmessage = (ev) => {
         try {

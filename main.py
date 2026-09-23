@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import time
 from collections import deque
@@ -51,6 +52,7 @@ import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 from influxdb_client import Point, WritePrecision
 
@@ -1102,6 +1104,8 @@ app = FastAPI(
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 DASHBOARD_HTML = FRONTEND_DIR / "index.html"
+UNITY_STATIC = FRONTEND_DIR / "unity"
+mimetypes.add_type("application/wasm", ".wasm")
 
 
 # ─────────────────────────────────────────────
@@ -1181,3 +1185,11 @@ async def websocket_endpoint(ws: WebSocket):
 @app.get("/ws/clients", summary="현재 WebSocket 연결 수 조회")
 async def ws_client_count():
     return {"connected_clients": ws_manager.client_count}
+
+
+if UNITY_STATIC.is_dir():
+    app.mount(
+        "/unity",
+        StaticFiles(directory=str(UNITY_STATIC), html=True),
+        name="unity",
+    )
