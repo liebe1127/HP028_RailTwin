@@ -1,0 +1,86 @@
+# InfluxDB + Grafana. 공개 포트는 8000번 하나다.
+# /dashboard 와 /ws 는 호스트의 FastAPI(127.0.0.1:8001)로 넘긴다.
+# /grafana 는 Grafana. InfluxDB 8086은 이 서버의 루프백만 연다.
+#
+# 서버에서: bash scripts/install_grafana_edge.sh
+
+name: railtwin-grafana
+
+services:
+  influxdb:
+    image: influxdb:2.7
+    container_name: railtwin-influx
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_ADMIN_USER:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_ADMIN_PASSWORD:?Set INFLUX_ADMIN_PASSWORD in .env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG:?Set INFLUX_ORG in .env}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET:-crane_data}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:?Set INFLUX_TOKEN in .env}
+    volumes:
+      - influx-data:/var/lib/influxdb2
+      - influx-config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 25s
+
+  grafana:
+    image: grafana/grafana-oss:11.4.0
+    container_name: railtwin-grafana
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-https://223.130.128.198:8000/grafana/}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_DOMAIN: ${GRAFANA_DOMAIN:-223.130.128.198}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_UID: railtwin-runs
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?Set INFLUX_TOKEN in .env}
+      INFLUX_ORG: ${INFLUX_ORG:?Set INFLUX_ORG in .env}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-crane_data}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+
+  edge:
+    build: ./deploy/edge
+    container_name: railtwin-edge
+    restart: unless-stopped
+    depends_on:
+      grafana:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-host.docker.internal:8001}
+    volumes:
+      - ${EDGE_CERT_FILE:-./cert.pem}:/certs/fullchain.pem:ro
+      - ${EDGE_KEY_FILE:-./key.pem}:/certs/privkey.pem:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8000/grafana/login); test \"$code\" = 200 -o \"$code\" = 302",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  influx-data:
+  influx-config:
+  grafana-data:

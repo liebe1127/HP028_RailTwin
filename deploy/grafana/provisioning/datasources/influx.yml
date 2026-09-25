@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    uid: influx-crane
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    isDefault: true
+    editable: false
+    jsonData:
+      version: Flux
+      organization: $__env{INFLUX_ORG}
+      defaultBucket: $__env{INFLUX_BUCKET}
+    secureJsonData:
+      token: $__env{INFLUX_TOKEN}

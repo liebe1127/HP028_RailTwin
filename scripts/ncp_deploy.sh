@@ -29,6 +29,10 @@ if [[ "${INSTALL_DEPS:-0}" == "1" && -x "$APP_DIR/venv/bin/pip" ]]; then
   "$APP_DIR/venv/bin/pip" install --no-cache-dir -r "$APP_DIR/requirements.txt"
 fi
 
+if [[ -f "$APP_DIR/scripts/install_grafana_edge.sh" ]]; then
+  bash "$APP_DIR/scripts/install_grafana_edge.sh"
+fi
+
 if systemctl list-unit-files "$SERVICE" --no-legend 2>/dev/null | grep -q "$SERVICE"; then
   systemctl restart "$SERVICE"
   systemctl --no-pager --full status "$SERVICE" | head -20
