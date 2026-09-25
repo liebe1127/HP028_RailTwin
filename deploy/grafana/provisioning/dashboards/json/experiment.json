@@ -3,7 +3,7 @@
   "title": "주행 기록",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "10s",
   "time": {
     "from": "now-6h",
@@ -25,8 +25,8 @@
         "refresh": 1,
         "sort": 0,
         "includeAll": false,
-        "query": "import \"date\"\nimport \"join\"\nimport \"strings\"\nimport \"timezone\"\n\nseoul = timezone.location(name: \"Asia/Seoul\")\n\npad2 = (n) => if n < 10 then \"0\" + string(v: n) else string(v: n)\n\nclock = (t) =>\n    string(v: date.month(t: t, location: seoul)) + \"월 \" +\n    string(v: date.monthDay(t: t, location: seoul)) + \"일 \" +\n    pad2(n: date.hour(t: t, location: seoul)) + \":\" +\n    pad2(n: date.minute(t: t, location: seoul))\n\ntail4 = (id) => {\n    n = strings.strlen(v: id)\n    return if n <= 4 then id else strings.substring(v: id, start: n - 4, end: n)\n}\n\nbootStarts = () =>\n    from(bucket: \"crane_data\")\n        |> range(start: -30d)\n        |> filter(fn: (r) => r._measurement == \"crane_sensor\" and r._field == \"position_mm\")\n        |> filter(fn: (r) => exists r.boot_id and r.boot_id != \"\")\n        |> group(columns: [\"boot_id\"])\n        |> min(column: \"_time\")\n        |> group()\n        |> map(fn: (r) => ({boot_id: r.boot_id, _time: r._time, minute: clock(t: r._time)}))\n\njoin.inner(\n    left: bootStarts(),\n    right: (\n        bootStarts()\n            |> group(columns: [\"minute\"])\n            |> count(column: \"boot_id\")\n            |> rename(columns: {boot_id: \"n\"})\n            |> group()\n    ),\n    on: (l, r) => l.minute == r.minute,\n    as: (l, r) => ({\n        _time: l._time,\n        __value: l.boot_id,\n        __text: if r.n > 1 then l.minute + \" \" + tail4(id: l.boot_id) else l.minute\n    }),\n)\n    |> group()\n    |> sort(columns: [\"_time\"], desc: true)\n    |> keep(columns: [\"__value\", \"__text\"])\n",
-        "definition": "import \"date\"\nimport \"join\"\nimport \"strings\"\nimport \"timezone\"\n\nseoul = timezone.location(name: \"Asia/Seoul\")\n\npad2 = (n) => if n < 10 then \"0\" + string(v: n) else string(v: n)\n\nclock = (t) =>\n    string(v: date.month(t: t, location: seoul)) + \"월 \" +\n    string(v: date.monthDay(t: t, location: seoul)) + \"일 \" +\n    pad2(n: date.hour(t: t, location: seoul)) + \":\" +\n    pad2(n: date.minute(t: t, location: seoul))\n\ntail4 = (id) => {\n    n = strings.strlen(v: id)\n    return if n <= 4 then id else strings.substring(v: id, start: n - 4, end: n)\n}\n\nbootStarts = () =>\n    from(bucket: \"crane_data\")\n        |> range(start: -30d)\n        |> filter(fn: (r) => r._measurement == \"crane_sensor\" and r._field == \"position_mm\")\n        |> filter(fn: (r) => exists r.boot_id and r.boot_id != \"\")\n        |> group(columns: [\"boot_id\"])\n        |> min(column: \"_time\")\n        |> group()\n        |> map(fn: (r) => ({boot_id: r.boot_id, _time: r._time, minute: clock(t: r._time)}))\n\njoin.inner(\n    left: bootStarts(),\n    right: (\n        bootStarts()\n            |> group(columns: [\"minute\"])\n            |> count(column: \"boot_id\")\n            |> rename(columns: {boot_id: \"n\"})\n            |> group()\n    ),\n    on: (l, r) => l.minute == r.minute,\n    as: (l, r) => ({\n        _time: l._time,\n        __value: l.boot_id,\n        __text: if r.n > 1 then l.minute + \" \" + tail4(id: l.boot_id) else l.minute\n    }),\n)\n    |> group()\n    |> sort(columns: [\"_time\"], desc: true)\n    |> keep(columns: [\"__value\", \"__text\"])\n"
+        "query": "import \"date\"\nimport \"strings\"\nimport \"timezone\"\n\nseoul = timezone.location(name: \"Asia/Seoul\")\n\npad2 = (n) => if n < 10 then \"0\" + string(v: n) else string(v: n)\n\nclock = (t) =>\n    string(v: date.month(t: t, location: seoul)) + \"월 \" +\n    string(v: date.monthDay(t: t, location: seoul)) + \"일 \" +\n    pad2(n: date.hour(t: t, location: seoul)) + \":\" +\n    pad2(n: date.minute(t: t, location: seoul))\n\nfrom(bucket: \"crane_data\")\n    |> range(start: -30d)\n    |> filter(fn: (r) => r._measurement == \"crane_sensor\" and r._field == \"position_mm\")\n    |> filter(fn: (r) => exists r.boot_id and r.boot_id != \"\")\n    |> group(columns: [\"boot_id\"])\n    |> min(column: \"_time\")\n    |> group()\n    |> map(fn: (r) => ({\n        _time: r._time,\n        __value: r.boot_id,\n        __text: clock(t: r._time) + \" · \" + r.boot_id,\n    }))\n    |> sort(columns: [\"_time\"], desc: true)\n    |> keep(columns: [\"__value\", \"__text\"])\n",
+        "definition": "import \"date\"\nimport \"strings\"\nimport \"timezone\"\n\nseoul = timezone.location(name: \"Asia/Seoul\")\n\npad2 = (n) => if n < 10 then \"0\" + string(v: n) else string(v: n)\n\nclock = (t) =>\n    string(v: date.month(t: t, location: seoul)) + \"월 \" +\n    string(v: date.monthDay(t: t, location: seoul)) + \"일 \" +\n    pad2(n: date.hour(t: t, location: seoul)) + \":\" +\n    pad2(n: date.minute(t: t, location: seoul))\n\nfrom(bucket: \"crane_data\")\n    |> range(start: -30d)\n    |> filter(fn: (r) => r._measurement == \"crane_sensor\" and r._field == \"position_mm\")\n    |> filter(fn: (r) => exists r.boot_id and r.boot_id != \"\")\n    |> group(columns: [\"boot_id\"])\n    |> min(column: \"_time\")\n    |> group()\n    |> map(fn: (r) => ({\n        _time: r._time,\n        __value: r.boot_id,\n        __text: clock(t: r._time) + \" · \" + r.boot_id,\n    }))\n    |> sort(columns: [\"_time\"], desc: true)\n    |> keep(columns: [\"__value\", \"__text\"])\n"
       }
     ]
   },
@@ -74,7 +74,7 @@
             "type": "influxdb",
             "uid": "influx-crane"
           },
-          "query": "from(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"sensor_distance_mm\")\n  |> filter(fn: (r) => r.boot_id == \"${boot_id}\")\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+          "query": "import \"strings\"\n\nraw = \"${boot_id}\"\nparts = strings.split(v: raw, t: \" · \")\nid = parts[length(arr: parts) - 1]\n\nfrom(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"sensor_distance_mm\")\n  |> filter(fn: (r) => r.boot_id == id)\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n"
         }
       ]
     },
@@ -121,7 +121,7 @@
             "type": "influxdb",
             "uid": "influx-crane"
           },
-          "query": "from(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"position_mm\")\n  |> filter(fn: (r) => r.boot_id == \"${boot_id}\")\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+          "query": "import \"strings\"\n\nraw = \"${boot_id}\"\nparts = strings.split(v: raw, t: \" · \")\nid = parts[length(arr: parts) - 1]\n\nfrom(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"position_mm\")\n  |> filter(fn: (r) => r.boot_id == id)\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n"
         }
       ]
     },
@@ -168,7 +168,7 @@
             "type": "influxdb",
             "uid": "influx-crane"
           },
-          "query": "from(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"mpu_accel_z\")\n  |> filter(fn: (r) => r.boot_id == \"${boot_id}\")\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+          "query": "import \"strings\"\n\nraw = \"${boot_id}\"\nparts = strings.split(v: raw, t: \" · \")\nid = parts[length(arr: parts) - 1]\n\nfrom(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"mpu_accel_z\")\n  |> filter(fn: (r) => r.boot_id == id)\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n"
         }
       ]
     }
