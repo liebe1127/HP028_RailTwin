@@ -148,6 +148,11 @@
       <h1 id="page-title" class="text-2xl md:text-3xl font-semibold tracking-tight">ESP32 MQTT → 규칙 판정 → Unity</h1>
       <p id="page-subtitle" class="text-sm text-slate-400 mt-2">갠트리 크레인이 레일을 지날 때 이상 구간을 표시합니다</p>
     </div>
+    <button id="btn-demo" type="button"
+      class="panel px-4 py-3 text-sm font-semibold text-left min-w-[180px] border-teal-800 text-teal-100 hover:border-teal-400">
+      <div id="btn-demo-label">더미 실행</div>
+      <div class="text-[11px] font-normal text-slate-400 mt-1">보드 없이 화면 확인</div>
+    </button>
     <div class="panel px-4 py-3 flex items-center gap-3 min-w-[220px]">
       <span id="dot" class="w-2.5 h-2.5 rounded-full bg-rose-500 hz-live"></span>
       <div>
@@ -649,7 +654,8 @@
           fetch(HTTP_BASE + '/', { cache: 'no-store' }).then((r) => r.json()),
           fetch(HTTP_BASE + '/ws/clients', { cache: 'no-store' }).then((r) => r.json()),
         ]);
-        demoMode = Boolean(h.demo_mode);
+        demoMode = Boolean(h.demo_running);
+        paintDemoButton();
         const mqttConnected = Boolean(h.mqtt && h.mqtt.connected);
         const mqttCount = (h.mqtt && h.mqtt.messages_received) || 0;
         const liveNodes = Object.values(h.sensor_nodes || {}).filter(
@@ -1194,6 +1200,44 @@
       }
     }
 
+    function paintDemoButton() {
+      const label = document.getElementById('btn-demo-label');
+      const btn = document.getElementById('btn-demo');
+      if (!label || !btn) return;
+      label.textContent = demoMode ? '더미 정지' : '더미 실행';
+      btn.classList.toggle('border-teal-400', Boolean(demoMode));
+    }
+
+    async function toggleDemo() {
+      const btn = document.getElementById('btn-demo');
+      if (!HTTP_BASE) {
+        pushLog('더미 실행 실패: 대시보드를 서버 /dashboard 로 열어주세요');
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch(HTTP_BASE + '/demo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          cache: 'no-store',
+          body: JSON.stringify({ running: !demoMode }),
+        });
+        const body = await res.json();
+        if (!res.ok || !body.ok) {
+          throw new Error(body.error || res.statusText);
+        }
+        demoMode = Boolean(body.demo_running);
+        paintDemoButton();
+        pushLog(demoMode ? '더미 주행 시작' : '더미 주행 정지');
+        refreshHealth();
+      } catch (err) {
+        pushLog('더미 전환 실패: ' + (err && err.message ? err.message : err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('btn-demo').addEventListener('click', toggleDemo);
     document.getElementById('btn-reset-risk').addEventListener('click', resetRailRisk);
     window.addEventListener('resize', () => {
       drawSpark('chart-seq', sparkSeq, '#f43f5e');

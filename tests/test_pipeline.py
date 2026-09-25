@@ -162,9 +162,25 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("chart-seq", declared_ids)
         self.assertIn("node-left-badge", declared_ids)
         self.assertIn("unity-canvas", declared_ids)
+        self.assertIn("btn-demo", declared_ids)
         self.assertIn("이음부 단차", html)
         self.assertNotIn("PRED_RAIL_DEFORM", html)
         self.assertNotIn("Godot", html)
+
+    def test_demo_streamer_can_start_and_stop(self) -> None:
+        import asyncio
+
+        async def cycle() -> None:
+            self.assertFalse(main.demo_is_running())
+            self.assertTrue(main.start_demo_streamer())
+            self.assertFalse(main.start_demo_streamer())
+            self.assertTrue(main.demo_is_running())
+            await asyncio.sleep(0.05)
+            self.assertTrue(await main.stop_demo_streamer())
+            self.assertFalse(main.demo_is_running())
+            self.assertFalse(await main.stop_demo_streamer())
+
+        asyncio.run(cycle())
 
     def test_combines_independent_left_and_right_nodes(self) -> None:
         main.latest_ws_payload_by_side.clear()
