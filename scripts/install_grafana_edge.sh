@@ -119,13 +119,16 @@ fi
 
 echo "[grafana] 이미지 받기 전에 안 쓰는 패키지 캐시와 실패한 이미지를 지웁니다."
 apt-get clean || true
+apt-get autoremove -y --purge || true
 docker system prune -af || true
-journalctl --vacuum-size=30M || true
+journalctl --vacuum-size=20M || true
+find /var/log -xdev -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) -delete || true
 df -h /
+du -xh --max-depth=1 / /var /var/lib /var/log /var/www /usr 2>/dev/null | sort -h | tail -30
 avail_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
 echo "[grafana] 남은 용량 ${avail_kb} KB"
-if (( avail_kb < 2500000 )); then
-  echo "[grafana] 남은 용량이 2.5GB 미만이라 화면을 바꾸지 않습니다. 실시간 화면은 그대로 둡니다."
+if (( avail_kb < 1400000 )); then
+  echo "[grafana] 남은 용량이 1.4GB 미만이라 화면을 바꾸지 않습니다. 실시간 화면은 그대로 둡니다."
   exit 0
 fi
 
