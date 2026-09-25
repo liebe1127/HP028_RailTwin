@@ -1,8 +1,12 @@
+using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 
 /// <summary>
 /// 대시보드 JS가 SendMessage("RailTwin", "ApplyState", json)로 이상 구간을 넣는다.
-/// JSON: {"x":45,"len":100,"n":20,"l":[...],"r":[...]}  — x·len은 cm. 레일만, 크레인 메시 없음.
+/// JSON: {"x":45,"len":100,"n":20,"l":[...],"r":[...]}  — x·len은 cm.
+/// 보이는 대차는 second-prototype 하나다. 모델 +X 를 화면의 먼 쪽 레일에 두었고,
+/// 그 레일에 left 색을 칠한다. 이 좌우 대응은 사진으로 아직 확인하지 않았다.
 /// </summary>
 public class RailTwinController : MonoBehaviour
 {
@@ -13,6 +17,14 @@ public class RailTwinController : MonoBehaviour
     Transform _marker;
     MeshRenderer[] _left;
     MeshRenderer[] _right;
+    float _cartCenterX;
+    float _cartWidth;
+    bool _prototype;
+    bool _orbit;
+    Vector3 _orbitFocus;
+    float _yaw;
+    float _pitch;
+    float _distance = 1.4f;
     static Material _sharedUnlit;
 
     void Awake()
@@ -23,7 +35,12 @@ public class RailTwinController : MonoBehaviour
     void Start()
     {
         // ApplyState가 Start보다 먼저 오면 이미 만들어 둔 막대를 다시 만들지 않는다.
-        if (_left == null)
+        Transform existing = transform.Find("Prototype");
+        if (existing != null)
+        {
+            AdoptPrototype(existing);
+        }
+        else if (_left == null && !BuildPrototype())
         {
             BuildRails();
         }
@@ -59,22 +76,189 @@ public class RailTwinController : MonoBehaviour
         if (_marker != null)
         {
             float t = Mathf.Clamp01(x / lengthCm);
-            _marker.localPosition = new Vector3((t - 0.5f) * railLength, 0.08f, 0f);
+            if (_prototype)
+            {
+                float half = _cartWidth * 0.5f;
+                float span = railLength * 0.5f;
+                float center = Mathf.Lerp(-span + half, span - half, t);
+                _marker.localPosition = new Vector3(center - _cartCenterX, 0f, 0f);
+            }
+            else
+            {
+                _marker.localPosition = new Vector3((t - 0.5f) * railLength, 0.08f, 0f);
+            }
         }
+    }
+
+    void AdoptPrototype(Transform root)
+    {
+        DestroyNamed("GantryMarker");
+        DestroyNamed("RailLeft");
+        DestroyNamed("RailRight");
+        Transform cart = root.Find("Cart");
+        Transform rails = root.Find("RailSource");
+        if (cart == null || rails == null)
+        {
+            return;
+        }
+
+        FlattenToUnlit(cart.gameObject);
+        _marker = cart;
+        _left = CollectRail(rails, "RailLeft_");
+        _right = CollectRail(rails, "RailRight_");
+        if (_left == null || _right == null)
+        {
+            return;
+        }
+
+        rails.localScale = Vector3.one;
+        float minX = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity;
+        foreach (MeshRenderer renderer in _left)
+        {
+            MeshFilter filter = renderer.GetComponent<MeshFilter>();
+            if (filter == null || filter.sharedMesh == null)
+            {
+                continue;
+            }
+            Vector3 a = renderer.transform.TransformPoint(filter.sharedMesh.bounds.min);
+            Vector3 b = renderer.transform.TransformPoint(filter.sharedMesh.bounds.max);
+            minX = Mathf.Min(minX, Mathf.Min(a.x, b.x));
+            maxX = Mathf.Max(maxX, Mathf.Max(a.x, b.x));
+        }
+        float meshLength = Mathf.Max(0.05f, maxX - minX);
+        rails.localScale = new Vector3(railLength / meshLength, 1f, 1f);
+
+        Bounds cartBounds = WorldBounds(cart.gameObject);
+        _cartCenterX = cartBounds.center.x - cart.position.x;
+        _cartWidth = cartBounds.size.x;
+        _prototype = true;
+        EnsureLight();
+        SetupCamera();
+        Camera cam = Camera.main;
+        if (cam != null)
+        {
+            cam.transform.position = new Vector3(0f, 0.38f, -1.35f);
+            cam.transform.LookAt(new Vector3(0f, 0.06f, 0f));
+            CaptureOrbit(new Vector3(0f, 0.06f, 0f));
+        }
+    }
+
+    static MeshRenderer[] CollectRail(Transform rails, string prefix)
+    {
+        var named = new List<Transform>();
+        foreach (Transform child in rails)
+        {
+            if (child.name.StartsWith(prefix))
+            {
+                named.Add(child);
+            }
+        }
+        named.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
+        var found = new List<MeshRenderer>();
+        foreach (Transform child in named)
+        {
+            MeshRenderer renderer = child.GetComponentInChildren<MeshRenderer>(true);
+            if (renderer != null)
+            {
+                found.Add(renderer);
+            }
+        }
+        return found.Count > 0 ? found.ToArray() : null;
+    }
+
+    bool BuildPrototype()
+    {
+        var cartPrefab = Resources.Load<GameObject>("SecondPrototype/cart");
+        var segments = Resources.LoadAll<GameObject>("SecondPrototype/Segments");
+        if (cartPrefab == null || segments == null || segments.Length == 0)
+        {
+            return false;
+        }
+
+        DestroyNamed("Prototype");
+        var root = new GameObject("Prototype");
+        root.transform.SetParent(transform, false);
+        var cart = Instantiate(cartPrefab, root.transform);
+        cart.name = "Cart";
+        var rails = new GameObject("RailSource");
+        rails.transform.SetParent(root.transform, false);
+        foreach (GameObject segment in segments)
+        {
+            var piece = Instantiate(segment, rails.transform);
+            piece.name = segment.name;
+        }
+        AdoptPrototype(root.transform);
+        if (!_prototype)
+        {
+            DestroyImmediate(root);
+            _marker = null;
+            return false;
+        }
+        return true;
+    }
+
+    static void FlattenToUnlit(GameObject root)
+    {
+        foreach (MeshRenderer renderer in root.GetComponentsInChildren<MeshRenderer>())
+        {
+            Color color = renderer.sharedMaterial != null ? renderer.sharedMaterial.color : new Color(0.75f, 0.75f, 0.78f);
+            Tint(renderer, color);
+        }
+    }
+
+    static Bounds WorldBounds(GameObject root)
+    {
+        Bounds bounds = new Bounds(root.transform.position, Vector3.zero);
+        bool started = false;
+        foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>())
+        {
+            if (!started)
+            {
+                bounds = renderer.bounds;
+                started = true;
+            }
+            else
+            {
+                bounds.Encapsulate(renderer.bounds);
+            }
+        }
+        return bounds;
     }
 
     void RebuildRails()
     {
-        BuildRails();
+        Transform existing = transform.Find("Prototype");
+        if (existing != null)
+        {
+            if (!_prototype || _left == null)
+            {
+                AdoptPrototype(existing);
+            }
+            return;
+        }
+        if (!BuildPrototype())
+        {
+            BuildRails();
+        }
     }
 
     void DestroyNamed(string name)
     {
-        Transform child = transform.Find(name);
+        DestroyChild(transform, name);
+    }
+
+    static void DestroyChild(Transform parent, string name)
+    {
+        if (parent == null)
+        {
+            return;
+        }
+        Transform child = parent.Find(name);
         while (child != null)
         {
             DestroyImmediate(child.gameObject);
-            child = transform.Find(name);
+            child = parent.Find(name);
         }
     }
 
@@ -93,6 +277,82 @@ public class RailTwinController : MonoBehaviour
         _marker = marker.transform;
         EnsureLight();
         SetupCamera();
+        CaptureOrbit(Vector3.zero);
+    }
+
+    public void OrbitDrag(string csv)
+    {
+        if (!_orbit || string.IsNullOrEmpty(csv))
+        {
+            return;
+        }
+        int comma = csv.IndexOf(',');
+        if (comma <= 0)
+        {
+            return;
+        }
+        float dx;
+        float dy;
+        if (!float.TryParse(csv.Substring(0, comma), NumberStyles.Float, CultureInfo.InvariantCulture, out dx))
+        {
+            return;
+        }
+        if (!float.TryParse(csv.Substring(comma + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out dy))
+        {
+            return;
+        }
+        _yaw += dx * 0.22f;
+        _pitch = Mathf.Clamp(_pitch - dy * 0.16f, 6f, 80f);
+        ApplyOrbit();
+    }
+
+    public void OrbitZoom(string raw)
+    {
+        if (!_orbit)
+        {
+            return;
+        }
+        float factor;
+        if (!float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out factor))
+        {
+            return;
+        }
+        _distance = Mathf.Clamp(_distance * factor, 0.4f, 4.5f);
+        ApplyOrbit();
+    }
+
+    void CaptureOrbit(Vector3 focus)
+    {
+        Camera cam = Camera.main;
+        if (cam == null)
+        {
+            return;
+        }
+        _orbitFocus = focus;
+        Vector3 offset = cam.transform.position - focus;
+        _distance = Mathf.Max(0.4f, offset.magnitude);
+        float flat = Mathf.Sqrt(offset.x * offset.x + offset.z * offset.z);
+        _pitch = Mathf.Atan2(offset.y, flat) * Mathf.Rad2Deg;
+        _yaw = Mathf.Atan2(offset.x, offset.z) * Mathf.Rad2Deg;
+        _orbit = true;
+    }
+
+    void ApplyOrbit()
+    {
+        Camera cam = Camera.main;
+        if (cam == null)
+        {
+            return;
+        }
+        float yawRad = _yaw * Mathf.Deg2Rad;
+        float pitchRad = _pitch * Mathf.Deg2Rad;
+        float horizontal = _distance * Mathf.Cos(pitchRad);
+        Vector3 offset = new Vector3(
+            horizontal * Mathf.Sin(yawRad),
+            _distance * Mathf.Sin(pitchRad),
+            horizontal * Mathf.Cos(yawRad));
+        cam.transform.position = _orbitFocus + offset;
+        cam.transform.LookAt(_orbitFocus);
     }
 
     MeshRenderer[] MakeRail(string name, float z)

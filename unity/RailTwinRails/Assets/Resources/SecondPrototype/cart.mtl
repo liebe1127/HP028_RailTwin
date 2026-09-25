@@ -1,0 +1,42 @@
+newmtl mat_0
+Kd 0.1683 0.1912 0.2159
+d 1
+newmtl mat_1
+Kd 0.1683 0.1912 0.2159
+d 1
+newmtl mat_2
+Kd 0.9047 0.9047 0.9047
+d 1
+newmtl mat_3
+Kd 0.6584 0.4508 0.0262
+d 1
+newmtl mat_4
+Kd 0.5906 0.6376 0.8550
+d 1
+newmtl mat_5
+Kd 0.2159 0.2159 0.2159
+d 1
+newmtl mat_6
+Kd 0.3763 0.2307 0.0000
+d 1
+newmtl mat_7
+Kd 0.5647 0.5333 0.5029
+d 1
+newmtl mat_8
+Kd 0.0252 0.0252 0.0252
+d 1
+newmtl mat_9
+Kd 0.5906 0.6376 0.8550
+d 1
+newmtl mat_10
+Kd 0.2159 0.2159 0.2159
+d 1
+newmtl mat_11
+Kd 0.3763 0.2307 0.0000
+d 1
+newmtl mat_12
+Kd 0.5647 0.5333 0.5029
+d 1
+newmtl mat_13
+Kd 0.6038 0.6038 0.6038
+d 1
