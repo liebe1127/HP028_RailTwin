@@ -75,6 +75,8 @@ DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").strip().lower() in {
     "yes",
     "on",
 }
+demo_stop_event: asyncio.Event | None = None
+demo_task: asyncio.Task | None = None
 # 중간 시연: left ESP32가 없으면 right WS 페이로드를 left에 복제 (대시보드·Unity 공통)
 MIRROR_RIGHT_TO_LEFT: bool = os.getenv(
     "MIRROR_RIGHT_TO_LEFT", "true"
@@ -497,6 +499,8 @@ async def process_mqtt_message(
                 batch_seq,
             )
             return 0
+        if demo_is_running():
+            return 0
         for item in queue_items:
             await enqueue_sensor_item(item)
         sensor_last_batch_seq[key] = batch_seq
@@ -773,6 +777,34 @@ async def dummy_sensor_streamer(stop_event: asyncio.Event) -> None:
     logger.info("더미 스트리머 종료")
 
 
+def demo_is_running() -> bool:
+    return demo_task is not None and not demo_task.done()
+
+
+def start_demo_streamer() -> bool:
+    """보드 없이 화면을 보여줄 때 더미 주행을 켠다. 이미 켜져 있으면 그대로 둔다."""
+    global demo_stop_event, demo_task
+    if demo_is_running():
+        return False
+    reset_rail_risk_state()
+    demo_stop_event = asyncio.Event()
+    demo_task = asyncio.create_task(
+        dummy_sensor_streamer(demo_stop_event), name="dummy-streamer"
+    )
+    return True
+
+
+async def stop_demo_streamer() -> bool:
+    """더미 주행만 멈춘다. MQTT 수신과 서버는 유지한다."""
+    global demo_stop_event, demo_task
+    if not demo_is_running() or demo_stop_event is None or demo_task is None:
+        return False
+    demo_stop_event.set()
+    await demo_task
+    demo_task = None
+    return True
+
+
 def build_influx_point(
     sample: dict,
     *,
@@ -885,7 +917,7 @@ async def influx_consumer(stop_event: asyncio.Event) -> None:
             else:
                 evaluation = {"ready": False}
 
-            if evaluation.get("ready") and evaluation.get("motion"):
+            if source != "demo" and evaluation.get("ready") and evaluation.get("motion"):
                 publish_motion_command(str(evaluation["motion"]))
 
             for side, sample in samples.items():
@@ -935,11 +967,7 @@ async def lifespan(app: FastAPI):
     stop_event = asyncio.Event()
     tasks: list[asyncio.Task] = []
     if DEMO_MODE:
-        tasks.append(
-            asyncio.create_task(
-                dummy_sensor_streamer(stop_event), name="dummy-streamer"
-            )
-        )
+        start_demo_streamer()
         logger.warning("DEMO_MODE=true → 시연용 더미 스트리머 시작")
     else:
         tasks.append(
@@ -966,6 +994,10 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("서버 종료 요청 — 태스크 종료 대기 중...")
         stop_event.set()
+        if demo_stop_event is not None:
+            demo_stop_event.set()
+        if demo_task is not None:
+            tasks.append(demo_task)
 
         await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("모든 백그라운드 태스크 종료 완료")
@@ -1014,6 +1046,7 @@ async def health_check():
         "rule_engine": True,
         "unity_webgl": (UNITY_STATIC / "Build").is_dir(),
         "demo_mode": DEMO_MODE,
+        "demo_running": demo_is_running(),
         "mirror_right_to_left": MIRROR_RIGHT_TO_LEFT,
     }
 
@@ -1029,6 +1062,18 @@ async def dashboard():
     if not DASHBOARD_HTML.is_file():
         return {"error": "frontend/index.html 이 서버에 없습니다"}
     return FileResponse(DASHBOARD_HTML)
+
+
+@app.post("/demo", summary="시연용 더미 주행 켜기/끄기")
+async def set_demo(body: dict):
+    """보드 없이 대시보드를 보여줄 때 더미 주행을 켜거나 끈다."""
+    running = bool(body.get("running"))
+    if running:
+        start_demo_streamer()
+    else:
+        await stop_demo_streamer()
+    logger.info("더미 주행 %s", "시작" if demo_is_running() else "정지")
+    return {"ok": True, "demo_running": demo_is_running()}
 
 
 @app.post("/rail_risk/reset", summary="레일 구간 위험도 히트맵 초기화")
