@@ -16,8 +16,30 @@ if [[ ! -f cert.pem || ! -f key.pem ]]; then
   echo "[grafana] cert.pem 또는 key.pem 없음. 실시간 화면은 그대로 둡니다."
   exit 0
 fi
+install_docker() {
+  echo "[grafana] Docker가 없어 설치합니다. 실시간 화면은 이 동안 그대로 둡니다."
+  apt-get update
+  apt-get install -y ca-certificates curl
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  systemctl enable --now docker
+}
+
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[grafana] docker 없음. 실시간 화면은 그대로 둡니다."
+  if ! install_docker; then
+    echo "[grafana] Docker 설치 실패. 실시간 화면은 그대로 둡니다." >&2
+    exit 0
+  fi
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "[grafana] docker compose 플러그인이 없습니다. 실시간 화면은 그대로 둡니다." >&2
   exit 0
 fi
 if ! systemctl cat fastapi.service >/dev/null 2>&1; then

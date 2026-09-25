@@ -21,6 +21,7 @@ jobs:
           username: ${{ secrets.NCP_USER }}
           key: ${{ secrets.NCP_SSH_KEY }}
           script_stop: true
+          command_timeout: 30m
           script: |
             set -e
             cd /var/www/HP028_RailTwin
