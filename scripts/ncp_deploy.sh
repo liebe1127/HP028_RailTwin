@@ -29,8 +29,9 @@ if [[ "${INSTALL_DEPS:-0}" == "1" && -x "$APP_DIR/venv/bin/pip" ]]; then
   "$APP_DIR/venv/bin/pip" install --no-cache-dir -r "$APP_DIR/requirements.txt"
 fi
 
+grafana_failed=0
 if [[ -f "$APP_DIR/scripts/install_grafana_edge.sh" ]]; then
-  bash "$APP_DIR/scripts/install_grafana_edge.sh"
+  bash "$APP_DIR/scripts/install_grafana_edge.sh" || grafana_failed=1
 fi
 
 if systemctl list-unit-files "$SERVICE" --no-legend 2>/dev/null | grep -q "$SERVICE"; then
@@ -41,3 +42,7 @@ else
 fi
 
 echo "[deploy] done @ $(git rev-parse --short HEAD)"
+if [[ "$grafana_failed" == 1 ]]; then
+  echo "[deploy] Grafana 설치가 실패했습니다. 실시간 화면은 원래 8000번으로 되돌렸습니다." >&2
+  exit 1
+fi

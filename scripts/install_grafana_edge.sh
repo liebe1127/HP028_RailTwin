@@ -132,10 +132,17 @@ if (( avail_kb < 1400000 )); then
   exit 0
 fi
 
+if ! curl -fsSk --max-time 3 https://127.0.0.1:8000/ >/dev/null 2>&1; then
+  echo "[grafana] 8000번이 꺼져 있어 FastAPI를 먼저 다시 켭니다."
+  rm -f /etc/systemd/system/fastapi.service.d/edge.conf
+  systemctl daemon-reload
+  systemctl restart fastapi.service || true
+fi
+
 restore_fastapi() {
   rm -f /etc/systemd/system/fastapi.service.d/edge.conf
   systemctl daemon-reload
-  systemctl start fastapi.service || true
+  systemctl restart fastapi.service || true
 }
 
 echo "[grafana] 8000번을 경로 나눔으로 바꿉니다. 잠시 대시보드가 끊깁니다."
@@ -154,7 +161,7 @@ cat > /etc/systemd/system/fastapi.service.d/edge.conf << EOF
 WorkingDirectory=${APP_DIR}
 Environment=INFLUX_URL=http://127.0.0.1:8086
 ExecStart=
-ExecStart=${UVICORN} main:app --host 127.0.0.1 --port 8001
+ExecStart=${UVICORN} main:app --host 0.0.0.0 --port 8001
 EOF
 
 systemctl daemon-reload

@@ -1,5 +1,6 @@
 # InfluxDB + Grafana. 공개 포트는 8000번 하나다.
-# /dashboard 와 /ws 는 호스트의 FastAPI(127.0.0.1:8001)로 넘긴다.
+# /dashboard 와 /ws 는 호스트의 FastAPI(0.0.0.0:8001)로 넘긴다.
+# 8001은 컨테이너가 닿도록 연다. 클라우드 방화벽에는 8001을 넣지 않는다.
 # /grafana 는 Grafana. InfluxDB 8086은 이 서버의 루프백만 연다.
 #
 # 서버에서: bash scripts/install_grafana_edge.sh
@@ -73,7 +74,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8000/grafana/login); test \"$code\" = 200 -o \"$code\" = 302",
+          "code=$$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8000/grafana/login); test \"$$code\" = 200 -o \"$$code\" = 302",
         ]
       interval: 15s
       timeout: 5s
