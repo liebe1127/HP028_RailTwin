@@ -54,11 +54,44 @@ public static class RailTwinWebGLBuild
         }
         var root = new GameObject("RailTwin");
         root.AddComponent<RailTwinController>();
+        PlacePrototype(root.transform);
         EditorSceneManager.SaveScene(scene, ScenePath);
         var list = new EditorBuildSettingsScene[]
         {
             new EditorBuildSettingsScene(ScenePath, true),
         };
         EditorBuildSettings.scenes = list;
+    }
+
+    static void PlacePrototype(Transform railTwin)
+    {
+        var cart = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Resources/SecondPrototype/cart.obj");
+        string[] segmentGuids = AssetDatabase.FindAssets(
+            "t:GameObject",
+            new[] { "Assets/Resources/SecondPrototype/Segments" });
+        if (cart == null || segmentGuids.Length == 0)
+        {
+            Debug.LogError("second-prototype OBJ를 불러오지 못했습니다.");
+            return;
+        }
+
+        var host = new GameObject("Prototype");
+        host.transform.SetParent(railTwin, false);
+        var cartGo = Object.Instantiate(cart, host.transform);
+        cartGo.name = "Cart";
+        var railGo = new GameObject("RailSource");
+        railGo.transform.SetParent(host.transform, false);
+        foreach (string guid in segmentGuids)
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            var segment = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (segment == null)
+            {
+                continue;
+            }
+            var piece = Object.Instantiate(segment, railGo.transform);
+            piece.name = Path.GetFileNameWithoutExtension(path);
+        }
+        Debug.Log("second-prototype segments " + railGo.transform.childCount);
     }
 }

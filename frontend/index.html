@@ -50,7 +50,7 @@
       border-left-color: #4b5d78;
     }
     .seg {
-      height: 14px;
+      height: 22px;
       border-radius: 3px;
       background: #1e293b;
       flex: 1;
@@ -63,9 +63,34 @@
       50% { opacity: 0.35; }
     }
     .log-line { border-bottom: 1px solid #1c273a; }
+    .unity-stage {
+      height: clamp(420px, 58vh, 680px);
+      touch-action: none;
+    }
+    #unity-canvas {
+      cursor: grab;
+      touch-action: none;
+    }
+    #unity-canvas:active {
+      cursor: grabbing;
+    }
+    .pipe-down {
+      width: 2px;
+      height: 22px;
+      background: linear-gradient(180deg, transparent, #4b5d78, transparent);
+      position: relative;
+    }
+    .pipe-down::after {
+      content: "";
+      position: absolute;
+      left: -4px;
+      bottom: -2px;
+      border: 5px solid transparent;
+      border-top-color: #4b5d78;
+    }
     .crane-track {
       position: relative;
-      height: 36px;
+      height: 44px;
       border-radius: 999px;
       background: #0f172a;
       border: 1px solid var(--line);
@@ -225,9 +250,9 @@
     </div>
   </section>
 
-  <section class="flex flex-col xl:flex-row xl:items-stretch gap-3 mb-6">
+  <section class="flex flex-col xl:flex-row xl:items-stretch gap-3 mb-3">
 
-    <article id="stage-1" class="panel p-4 flex-1 xl:flex-[1.15] xl:min-w-0">
+    <article id="stage-1" class="panel p-5 flex-1 xl:min-w-0">
       <div class="flex items-center justify-between mb-3">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage1)">단계 1</div>
@@ -253,56 +278,56 @@
       <div class="grid grid-cols-3 gap-2 text-center">
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">MPU AX L</div>
-          <div id="val-accel-x-l" class="mono text-sm">—</div>
+          <div id="val-accel-x-l" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">MPU AY L</div>
-          <div id="val-accel-y-l" class="mono text-sm">—</div>
+          <div id="val-accel-y-l" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">MPU AZ L</div>
-          <div id="val-accel-z-l" class="mono text-sm">—</div>
+          <div id="val-accel-z-l" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">MPU AX R</div>
-          <div id="val-accel-x-r" class="mono text-sm">—</div>
+          <div id="val-accel-x-r" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">MPU AY R</div>
-          <div id="val-accel-y-r" class="mono text-sm">—</div>
+          <div id="val-accel-y-r" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">MPU AZ R</div>
-          <div id="val-accel-z-r" class="mono text-sm">—</div>
+          <div id="val-accel-z-r" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">GYRO X L</div>
-          <div id="val-gyro-x-l" class="mono text-sm">—</div>
+          <div id="val-gyro-x-l" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">GYRO Y L</div>
-          <div id="val-gyro-y-l" class="mono text-sm">—</div>
+          <div id="val-gyro-y-l" class="mono text-lg">—</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">GYRO Z L</div>
-          <div id="val-gyro-z-l" class="mono text-sm">—</div>
+          <div id="val-gyro-z-l" class="mono text-lg">—</div>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-2 mt-2 text-center">
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">LR18 거리 L</div>
-          <div id="val-distance-l" class="mono text-sm">— mm</div>
+          <div id="val-distance-l" class="mono text-lg">— mm</div>
         </div>
         <div class="rounded-lg bg-slate-900/60 p-2">
           <div class="text-[10px] text-slate-500">LR18 거리 R</div>
-          <div id="val-distance-r" class="mono text-sm">— mm</div>
+          <div id="val-distance-r" class="mono text-lg">— mm</div>
         </div>
       </div>
     </article>
 
     <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
 
-    <article id="stage-2" class="panel p-4 flex-1 xl:flex-[0.95] xl:min-w-0">
+    <article id="stage-2" class="panel p-5 flex-1 xl:min-w-0">
       <div class="flex items-center justify-between mb-3">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage2)">단계 2</div>
@@ -315,28 +340,28 @@
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
           <div class="text-[10px] text-amber-400/80 mb-1">평균 간격 변화 m (mm)</div>
-          <div id="val-m" class="mono text-2xl font-semibold">—</div>
+          <div id="val-m" class="mono text-3xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
             <div id="bar-m" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
         <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
           <div class="text-[10px] text-amber-400/80 mb-1">좌우 차 Δ (mm)</div>
-          <div id="val-delta" class="mono text-2xl font-semibold">—</div>
+          <div id="val-delta" class="mono text-3xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
             <div id="bar-delta" class="h-full bg-amber-500 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
         <div class="rounded-lg border border-orange-900/40 bg-orange-950/20 p-3">
           <div class="text-[10px] text-orange-300/80 mb-1">충격 apeak (m/s²)</div>
-          <div id="val-apeak" class="mono text-2xl font-semibold">—</div>
+          <div id="val-apeak" class="mono text-3xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
             <div id="bar-apeak" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
           </div>
         </div>
         <div class="rounded-lg border border-orange-900/40 bg-orange-950/20 p-3">
           <div class="text-[10px] text-orange-300/80 mb-1">기울기 φ (°)</div>
-          <div id="val-tilt" class="mono text-2xl font-semibold">—</div>
+          <div id="val-tilt" class="mono text-3xl font-semibold">—</div>
           <div class="h-1 mt-2 rounded bg-slate-800 overflow-hidden">
             <div id="bar-tilt" class="h-full bg-orange-400 transition-all duration-200" style="width:0%"></div>
           </div>
@@ -347,9 +372,12 @@
       <div id="defect-list" class="text-[11px] text-slate-400 leading-relaxed min-h-[2.5rem]">이상 구간 대기…</div>
     </article>
 
-    <div class="hidden xl:flex items-center justify-center"><div class="pipe-arrow"></div></div>
+  </section>
 
-    <article id="stage-3" class="panel p-4 flex-1 xl:flex-[1.4] xl:min-w-0">
+  <div class="hidden xl:flex justify-center mb-3" aria-hidden="true"><div class="pipe-down"></div></div>
+
+  <section class="mb-6">
+    <article id="stage-3" class="panel p-4">
       <div class="flex items-center justify-between mb-3 gap-2">
         <div>
           <div class="text-[11px] tracking-widest uppercase" style="color: var(--stage3)">단계 3</div>
@@ -363,13 +391,13 @@
           <span id="broadcast-badge" class="text-xs px-2 py-1 rounded-full border border-slate-600 text-slate-400">대기</span>
         </div>
       </div>
-      <p class="text-xs text-slate-400 mb-3">같은 좌표로 좌·우 레일만 색을 바꿉니다. 크레인 모델은 넣지 않습니다.</p>
-      <div class="relative mb-3 rounded-lg overflow-hidden bg-slate-950 border border-slate-800" style="height:220px">
-        <canvas id="unity-canvas" class="absolute inset-0 w-full h-full" width="960" height="220" tabindex="-1"></canvas>
+      <p class="text-xs text-slate-400 mb-3">2차 모형입니다. 대차 하나가 위치를 따라 움직이고, 좌·우 레일 색이 구간 단계를 보여 줍니다.</p>
+      <div class="unity-stage relative mb-3 rounded-lg overflow-hidden bg-slate-950 border border-slate-800">
+        <canvas id="unity-canvas" class="absolute inset-0 w-full h-full" width="1280" height="480" tabindex="-1"></canvas>
         <canvas id="rail-fallback" class="absolute inset-0 w-full h-full"></canvas>
         <div id="unity-status" class="absolute left-2 bottom-2 text-[10px] text-slate-500">레일 뷰</div>
       </div>
-      <p class="text-xs text-slate-400 mb-4">초록 정상 · 노랑 주의(감속) · 빨강 위험(진입 전 정지). 더미 주행은 시뮬레이션입니다.</p>
+      <p class="text-xs text-slate-400 mb-4">초록 정상 · 노랑 주의(감속) · 빨강 위험(진입 전 정지). PC는 드래그와 휠, 태블릿은 한 손가락 드래그와 두 손가락 확대입니다. 더미 주행은 시뮬레이션입니다.</p>
 
       <div class="mb-3">
         <div class="text-[11px] text-slate-500 mb-1">LEFT rail_risk</div>
@@ -1014,6 +1042,63 @@
       }
     }
 
+    function bindOrbit(canvas, instance) {
+      const pointers = new Map();
+      let pinch = 0;
+
+      function sendDrag(dx, dy) {
+        if (Math.abs(dx) + Math.abs(dy) < 0.4) return;
+        instance.SendMessage('RailTwin', 'OrbitDrag', dx.toFixed(2) + ',' + dy.toFixed(2));
+      }
+
+      function sendZoom(factor) {
+        if (!Number.isFinite(factor) || Math.abs(factor - 1) < 0.002) return;
+        instance.SendMessage('RailTwin', 'OrbitZoom', factor.toFixed(4));
+      }
+
+      function pinchDistance() {
+        const pts = Array.from(pointers.values());
+        if (pts.length < 2) return 0;
+        return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      }
+
+      canvas.addEventListener('pointerdown', (ev) => {
+        if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+        canvas.setPointerCapture(ev.pointerId);
+        pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+        if (pointers.size === 2) pinch = pinchDistance();
+      });
+
+      canvas.addEventListener('pointermove', (ev) => {
+        const prev = pointers.get(ev.pointerId);
+        if (!prev) return;
+        pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+        if (pointers.size >= 2) {
+          const next = pinchDistance();
+          if (pinch > 8 && next > 8) sendZoom(pinch / next);
+          pinch = next;
+          return;
+        }
+        if (ev.pointerType === 'mouse' && (ev.buttons & 1) === 0) return;
+        sendDrag(ev.clientX - prev.x, ev.clientY - prev.y);
+      });
+
+      function endPointer(ev) {
+        pointers.delete(ev.pointerId);
+        pinch = pointers.size >= 2 ? pinchDistance() : 0;
+      }
+      canvas.addEventListener('pointerup', endPointer);
+      canvas.addEventListener('pointercancel', endPointer);
+
+      canvas.addEventListener('wheel', (ev) => {
+        ev.preventDefault();
+        const dy = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY;
+        sendZoom(Math.exp(dy * 0.0016));
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', (ev) => ev.preventDefault(), { passive: false });
+    }
+
     async function loadUnity() {
       if (unityTried) return;
       unityTried = true;
@@ -1043,6 +1128,7 @@
           },
         });
         window.unityInstance = unityInstance;
+        bindOrbit(canvas, unityInstance);
         document.getElementById('rail-fallback').style.display = 'none';
         status.textContent = 'Unity WebGL';
       } catch (err) {
