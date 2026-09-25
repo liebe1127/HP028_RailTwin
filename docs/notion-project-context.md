@@ -335,7 +335,6 @@ Notion 일정은 2026-08-23 기준으로 다수 기한이 경과했다. 보고�
 
 - 공식 보고서 PDF: `/Users/junho2026/Downloads/해운물류 개발보고서.pdf`
 - 공식 양식 항목표: `docs/development-report-template-map.md`
-- 개발보고서 초안: `docs/2026_스마트해운물류_개발보고서_초안.md`
 - 하드웨어 변경 이력: `docs/hardware-configuration-history.md`
 - 프로젝트 규칙: `.cursor/rules/rail-deformation-context.mdc`
 - 과거 펌웨어: `firmware/crane_sensor/crane_sensor.ino`
