@@ -84,9 +84,35 @@ PY
   echo "[grafana] ${key} 를 서버 .env에 넣었습니다. 값은 로그에 남기지 않습니다."
 }
 
+set_env() {
+  local key="$1"
+  local value="$2"
+  python3 - "$key" "$value" << 'PY'
+import pathlib, sys
+key, value = sys.argv[1], sys.argv[2]
+path = pathlib.Path(".env")
+lines = path.read_text().splitlines()
+found = False
+out = []
+for line in lines:
+    if line.startswith(key + "="):
+        out.append(f"{key}={value}")
+        found = True
+    else:
+        out.append(line)
+if not found:
+    if out and out[-1] != "":
+        out.append("")
+    out.append(f"{key}={value}")
+path.write_text("\n".join(out) + "\n")
+PY
+  export "${key}=${value}"
+}
+
 ensure_env INFLUX_TOKEN "your-influxdb-api-token-here"
 ensure_env INFLUX_ADMIN_PASSWORD "replace-with-long-password"
-ensure_env GRAFANA_ADMIN_PASSWORD "replace-with-long-password"
+set_env GRAFANA_ADMIN_USER "railtwin"
+set_env GRAFANA_ADMIN_PASSWORD "11111111"
 
 if [[ -z "${INFLUX_ORG:-}" ]]; then
   echo "[grafana] INFLUX_ORG 가 비어 있습니다. 실시간 화면은 그대로 둡니다."
@@ -99,7 +125,6 @@ export GRAFANA_DOMAIN="${GRAFANA_DOMAIN:-223.130.128.198}"
 export EDGE_CERT_FILE="${APP_DIR}/cert.pem"
 export EDGE_KEY_FILE="${APP_DIR}/key.pem"
 export API_UPSTREAM="host.docker.internal:8001"
-export GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER:-admin}"
 export INFLUX_ADMIN_USER="${INFLUX_ADMIN_USER:-admin}"
 
 UVICORN="$(python3 - << 'PY'
@@ -192,5 +217,36 @@ if [[ "$ok" != 1 ]]; then
   exit 1
 fi
 
+grafana_login_ok() {
+  local code
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
+    -u "${GRAFANA_ADMIN_USER}:${GRAFANA_ADMIN_PASSWORD}" \
+    https://127.0.0.1:8000/grafana/api/user || true)"
+  [[ "$code" == "200" ]]
+}
+
+if ! grafana_login_ok; then
+  echo "[grafana] 기존 관리자 계정을 지우고 로그인 이름을 다시 만듭니다. 저장된 주행 기록은 남습니다."
+  docker compose -f docker-compose.grafana.yml stop grafana
+  docker compose -f docker-compose.grafana.yml rm -f grafana
+  docker volume rm railtwin-grafana_grafana-data
+  if ! docker compose -f docker-compose.grafana.yml up -d grafana; then
+    echo "[grafana] Grafana를 새 로그인으로 다시 켜지 못했습니다." >&2
+    exit 1
+  fi
+  login_ok=0
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if grafana_login_ok; then
+      login_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$login_ok" != 1 ]]; then
+    echo "[grafana] 새 로그인으로 들어가지 못했습니다." >&2
+    exit 1
+  fi
+fi
+
 echo "[grafana] 실시간 화면은 그대로이고, 지난 주행은 ${GRAFANA_ROOT_URL} 입니다."
-echo "[grafana] Grafana 로그인 이름은 ${GRAFANA_ADMIN_USER} 이고, 비밀번호는 서버 .env 의 GRAFANA_ADMIN_PASSWORD 입니다."
+echo "[grafana] Grafana 로그인 이름은 ${GRAFANA_ADMIN_USER} 입니다."
