@@ -3,22 +3,30 @@
   "title": "주행 기록",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
-  "time": { "from": "now-6h", "to": "now" },
-  "tags": ["railtwin"],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "tags": [
+    "railtwin"
+  ],
   "templating": {
     "list": [
       {
         "name": "boot_id",
         "label": "주행",
         "type": "query",
-        "datasource": { "type": "influxdb", "uid": "influx-crane" },
-        "refresh": 2,
-        "sort": 3,
+        "datasource": {
+          "type": "influxdb",
+          "uid": "influx-crane"
+        },
+        "refresh": 1,
+        "sort": 0,
         "includeAll": false,
-        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"crane_data\", tag: \"boot_id\", predicate: (r) => r._measurement == \"crane_sensor\", start: -30d)",
-        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"crane_data\", tag: \"boot_id\", predicate: (r) => r._measurement == \"crane_sensor\", start: -30d)"
+        "query": "import \"date\"\nimport \"join\"\nimport \"strings\"\nimport \"timezone\"\n\nseoul = timezone.location(name: \"Asia/Seoul\")\n\npad2 = (n) => if n < 10 then \"0\" + string(v: n) else string(v: n)\n\nclock = (t) =>\n    string(v: date.month(t: t, location: seoul)) + \"월 \" +\n    string(v: date.monthDay(t: t, location: seoul)) + \"일 \" +\n    pad2(n: date.hour(t: t, location: seoul)) + \":\" +\n    pad2(n: date.minute(t: t, location: seoul))\n\ntail4 = (id) => {\n    n = strings.strlen(v: id)\n    return if n <= 4 then id else strings.substring(v: id, start: n - 4, end: n)\n}\n\nbootStarts = () =>\n    from(bucket: \"crane_data\")\n        |> range(start: -30d)\n        |> filter(fn: (r) => r._measurement == \"crane_sensor\" and r._field == \"position_mm\")\n        |> filter(fn: (r) => exists r.boot_id and r.boot_id != \"\")\n        |> group(columns: [\"boot_id\"])\n        |> min(column: \"_time\")\n        |> group()\n        |> map(fn: (r) => ({boot_id: r.boot_id, _time: r._time, minute: clock(t: r._time)}))\n\njoin.inner(\n    left: bootStarts(),\n    right: (\n        bootStarts()\n            |> group(columns: [\"minute\"])\n            |> count(column: \"boot_id\")\n            |> rename(columns: {boot_id: \"n\"})\n            |> group()\n    ),\n    on: (l, r) => l.minute == r.minute,\n    as: (l, r) => ({\n        _time: l._time,\n        __value: l.boot_id,\n        __text: if r.n > 1 then l.minute + \" \" + tail4(id: l.boot_id) else l.minute\n    }),\n)\n    |> group()\n    |> sort(columns: [\"_time\"], desc: true)\n    |> keep(columns: [\"__value\", \"__text\"])\n",
+        "definition": "import \"date\"\nimport \"join\"\nimport \"strings\"\nimport \"timezone\"\n\nseoul = timezone.location(name: \"Asia/Seoul\")\n\npad2 = (n) => if n < 10 then \"0\" + string(v: n) else string(v: n)\n\nclock = (t) =>\n    string(v: date.month(t: t, location: seoul)) + \"월 \" +\n    string(v: date.monthDay(t: t, location: seoul)) + \"일 \" +\n    pad2(n: date.hour(t: t, location: seoul)) + \":\" +\n    pad2(n: date.minute(t: t, location: seoul))\n\ntail4 = (id) => {\n    n = strings.strlen(v: id)\n    return if n <= 4 then id else strings.substring(v: id, start: n - 4, end: n)\n}\n\nbootStarts = () =>\n    from(bucket: \"crane_data\")\n        |> range(start: -30d)\n        |> filter(fn: (r) => r._measurement == \"crane_sensor\" and r._field == \"position_mm\")\n        |> filter(fn: (r) => exists r.boot_id and r.boot_id != \"\")\n        |> group(columns: [\"boot_id\"])\n        |> min(column: \"_time\")\n        |> group()\n        |> map(fn: (r) => ({boot_id: r.boot_id, _time: r._time, minute: clock(t: r._time)}))\n\njoin.inner(\n    left: bootStarts(),\n    right: (\n        bootStarts()\n            |> group(columns: [\"minute\"])\n            |> count(column: \"boot_id\")\n            |> rename(columns: {boot_id: \"n\"})\n            |> group()\n    ),\n    on: (l, r) => l.minute == r.minute,\n    as: (l, r) => ({\n        _time: l._time,\n        __value: l.boot_id,\n        __text: if r.n > 1 then l.minute + \" \" + tail4(id: l.boot_id) else l.minute\n    }),\n)\n    |> group()\n    |> sort(columns: [\"_time\"], desc: true)\n    |> keep(columns: [\"__value\", \"__text\"])\n"
       }
     ]
   },
@@ -28,24 +36,44 @@
       "type": "timeseries",
       "title": "간격",
       "description": "LR18 간격. 왼쪽과 오른쪽. 단위는 mm.",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
-      "datasource": { "type": "influxdb", "uid": "influx-crane" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influx-crane"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "displayName": "${__field.labels.rail_side}",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": false }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "influxdb", "uid": "influx-crane" },
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influx-crane"
+          },
           "query": "from(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"sensor_distance_mm\")\n  |> filter(fn: (r) => r.boot_id == \"${boot_id}\")\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
         }
       ]
@@ -55,24 +83,44 @@
       "type": "timeseries",
       "title": "위치",
       "description": "엔코더 위치. 단위는 mm. 화면의 거리는 왼쪽 바퀴를 본다.",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
-      "datasource": { "type": "influxdb", "uid": "influx-crane" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influx-crane"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "displayName": "${__field.labels.rail_side}",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": false }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "influxdb", "uid": "influx-crane" },
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influx-crane"
+          },
           "query": "from(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"position_mm\")\n  |> filter(fn: (r) => r.boot_id == \"${boot_id}\")\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
         }
       ]
@@ -82,24 +130,44 @@
       "type": "timeseries",
       "title": "세로 가속도",
       "description": "MPU 세로 가속도. 단위는 m/s².",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
-      "datasource": { "type": "influxdb", "uid": "influx-crane" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influx-crane"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "accMS2",
           "displayName": "${__field.labels.rail_side}",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": false }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "influxdb", "uid": "influx-crane" },
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influx-crane"
+          },
           "query": "from(bucket: \"crane_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"crane_sensor\")\n  |> filter(fn: (r) => r._field == \"mpu_accel_z\")\n  |> filter(fn: (r) => r.boot_id == \"${boot_id}\")\n  |> group(columns: [\"rail_side\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
         }
       ]
