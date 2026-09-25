@@ -158,6 +158,10 @@
       <div>지난 주행</div>
       <div class="text-[11px] font-normal text-slate-400 mt-1">저장된 간격·위치·가속도</div>
     </a>
+    <button id="btn-reset-position" type="button"
+      class="panel px-4 py-3 text-sm font-semibold text-left min-w-[180px] border-teal-800 text-teal-100 hover:border-teal-400">
+      위치 리셋
+    </button>
     <div class="panel px-4 py-3 flex items-center gap-3 min-w-[220px]">
       <span id="dot" class="w-2.5 h-2.5 rounded-full bg-rose-500 hz-live"></span>
       <div>
@@ -489,6 +493,8 @@
     // 중간 시연: left ESP32가 없을 때 right 페이로드를 left UI에도 복제
     const MIRROR_RIGHT_TO_LEFT = true;
     let leftMirroredActive = false;
+    let lastLeft = null;
+    let lastRight = null;
     const hzSamples = [];
     const sparkSeq = [];
     const sparkRate = [];
@@ -766,6 +772,8 @@
         leftMirroredActive = false;
       }
 
+      lastLeft = left;
+      lastRight = right;
       const chartSide = leftHasLive || mirrored ? left : right || left;
       const x = left.distance_x ?? (right && right.distance_x);
       const seq = left.sample_seq ?? (right && right.sample_seq);
@@ -1181,6 +1189,36 @@
       paintRisk(riskRightEl, zeros);
     }
 
+    function showCartAtStart() {
+      document.getElementById('val-x').textContent = '0 cm';
+      document.getElementById('crane-dot').style.left = '0%';
+      const span = railSpanCm(lastLeft, lastRight);
+      drawRailFallback(lastLeft, lastRight, 0, span);
+      pushUnityState(lastLeft, lastRight, 0);
+    }
+
+    async function resetPosition() {
+      const btn = document.getElementById('btn-reset-position');
+      if (!HTTP_BASE) {
+        pushLog('위치 리셋 실패: 대시보드를 서버 /dashboard 로 열어주세요');
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch(HTTP_BASE + '/position/reset', { method: 'POST', cache: 'no-store' });
+        const body = await res.json();
+        if (!res.ok || !body.ok) {
+          throw new Error(body.error || res.statusText);
+        }
+        showCartAtStart();
+        pushLog('위치 리셋: 대차를 시작 위치로 되돌렸습니다');
+      } catch (err) {
+        pushLog('위치 리셋 실패: ' + (err && err.message ? err.message : err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     async function resetRailRisk() {
       const btn = document.getElementById('btn-reset-risk');
       if (!HTTP_BASE) {
@@ -1243,6 +1281,7 @@
     }
 
     document.getElementById('btn-demo').addEventListener('click', toggleDemo);
+    document.getElementById('btn-reset-position').addEventListener('click', resetPosition);
     document.getElementById('btn-reset-risk').addEventListener('click', resetRailRisk);
     window.addEventListener('resize', () => {
       drawSpark('chart-seq', sparkSeq, '#f43f5e');

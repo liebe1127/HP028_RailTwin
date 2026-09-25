@@ -288,6 +288,22 @@ def reset_rail_risk_state(side: str | None = None) -> dict[str, list[float]]:
     return {s: list(rail_risk_state[s]) for s in RAIL_SIDES}
 
 
+def publish_position_zero() -> bool:
+    """대시보드 위치 리셋. 보드 엔코더를 0으로 만든다."""
+    client = mqtt_command_client
+    if client is None or not mqtt_state.get("connected"):
+        return False
+    payload = json.dumps({"action": "zero"}, ensure_ascii=False)
+    for device_id in ("rail-left-01", "rail-right-01"):
+        client.publish(
+            f"{MQTT_TOPIC_PREFIX}/{device_id}/command",
+            payload,
+            qos=1,
+            retain=False,
+        )
+    return True
+
+
 def publish_motion_command(motion: str) -> None:
     """주의는 감속, 위험 진입 전은 정지. 토픽 rail/v1/nodes/{id}/command."""
     global last_motion_command
@@ -1074,6 +1090,15 @@ async def set_demo(body: dict):
         await stop_demo_streamer()
     logger.info("더미 주행 %s", "시작" if demo_is_running() else "정지")
     return {"ok": True, "demo_running": demo_is_running()}
+
+
+@app.post("/position/reset", summary="대차 위치를 시작점으로 되돌린다")
+async def position_reset():
+    """보드 엔코더를 0으로 만든다. 실물을 시작 자리에 둔 뒤에 누른다."""
+    if not publish_position_zero():
+        return {"ok": False, "error": "보드로 위치 리셋 명령을 보내지 못했습니다"}
+    logger.info("위치 리셋 명령을 보드에 보냈습니다")
+    return {"ok": True}
 
 
 @app.post("/rail_risk/reset", summary="레일 구간 위험도 히트맵 초기화")
