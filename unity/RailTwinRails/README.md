@@ -1,6 +1,6 @@
 # Unity 레일 WebGL
 
-3D는 **레일 두 줄만** 다룬다. 크레인 상용 모델은 넣지 않는다.
+3D는 **레일 두 줄만** 다룬다. 크레인 상용 모델은 넣지 않는다. 각 줄은 아연 각파이프(25×25 mm, 60 cm) 5개를 이은 300 cm이고, 이음만 밝은 띠로 구분한다.
 
 Mac 온보딩(Hub에 프로젝트 추가, Cursor 연결, Play 확인)은 [`docs/mac-m5-unity-onboarding.md`](../../docs/mac-m5-unity-onboarding.md)다. 에디터는 **6000.6.0f1** + **Web Build Support**가 필요하다. 저장소 루트가 아니라 이 폴더(`unity/RailTwinRails`)를 연다.
 

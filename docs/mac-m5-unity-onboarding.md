@@ -109,7 +109,7 @@ python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
 성공 기준:
 
 - 단계 3 상태가 `Unity WebGL`
-- 약 40–50 cm에서 레일 중간이 노랑·빨강
+- 레일은 각파이프 5개, 300 cm. 더미 색은 시작 쪽 20–90 cm(첫·둘째 파이프)에 있다
 - LEFT `demo-left`, RIGHT `demo-right`
 
 Unity 산출물이 없으면 대시보드가 2D 레일 폴백을 쓴다. 그건 엔진이 고장난 것이 아니라 빌드·복사가 안 된 것이다.

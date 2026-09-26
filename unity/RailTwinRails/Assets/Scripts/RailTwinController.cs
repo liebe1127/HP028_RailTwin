@@ -5,18 +5,31 @@ using UnityEngine;
 /// <summary>
 /// 대시보드 JS가 SendMessage("RailTwin", "ApplyState", json)로 이상 구간을 넣는다.
 /// JSON: {"x":45,"len":100,"n":20,"l":[...],"r":[...]}  — x·len은 cm.
+/// 레일은 second-prototype의 각파이프(25×25 mm, 60 cm)를 5개 이어 300 cm다.
+/// x는 그 300 cm 레일 시작에서의 위치이고, len 구간만 위험색을 칠한다.
 /// 보이는 대차는 second-prototype 하나다. 모델 +X 를 화면의 먼 쪽 레일에 두었고,
 /// 그 레일에 left 색을 칠한다. 이 좌우 대응은 사진으로 아직 확인하지 않았다.
 /// </summary>
 public class RailTwinController : MonoBehaviour
 {
+    const int PipeCount = 5;
+    const float PipeLength = 0.6f;
+    const float PipeSection = 0.025f;
+    const float JointGap = 0.015f;
+
     public int segmentCount = 20;
-    public float railLength = 1.0f;
-    public float railGap = 0.28f;
+    public float railLength = PipeCount * PipeLength;
+    public float railGap = 0.386f;
+
+    struct RailPiece
+    {
+        public MeshRenderer Renderer;
+        public float AlongM;
+    }
 
     Transform _marker;
-    MeshRenderer[] _left;
-    MeshRenderer[] _right;
+    List<RailPiece> _left;
+    List<RailPiece> _right;
     float _cartCenterX;
     float _cartWidth;
     bool _prototype;
@@ -24,7 +37,7 @@ public class RailTwinController : MonoBehaviour
     Vector3 _orbitFocus;
     float _yaw;
     float _pitch;
-    float _distance = 1.4f;
+    float _distance = 5.2f;
     static Material _sharedUnlit;
 
     void Awake()
@@ -44,6 +57,11 @@ public class RailTwinController : MonoBehaviour
         {
             BuildRails();
         }
+    }
+
+    void UsePipeSpec()
+    {
+        railLength = PipeCount * PipeLength;
     }
 
     public void ApplyState(string json)
@@ -66,28 +84,34 @@ public class RailTwinController : MonoBehaviour
         {
             count = left.Length > 0 ? left.Length : segmentCount;
         }
-        if (_left == null || count != segmentCount)
+        segmentCount = Mathf.Max(1, count);
+        if (_left == null)
         {
-            segmentCount = Mathf.Max(1, count);
             RebuildRails();
         }
-        Paint(_left, left);
-        Paint(_right, right);
-        if (_marker != null)
+        Paint(_left, left, lengthCm);
+        Paint(_right, right, lengthCm);
+        PlaceMarker(x);
+    }
+
+    void PlaceMarker(float xCm)
+    {
+        if (_marker == null)
         {
-            float t = Mathf.Clamp01(x / lengthCm);
-            if (_prototype)
-            {
-                float half = _cartWidth * 0.5f;
-                float span = railLength * 0.5f;
-                float center = Mathf.Lerp(-span + half, span - half, t);
-                _marker.localPosition = new Vector3(center - _cartCenterX, 0f, 0f);
-            }
-            else
-            {
-                _marker.localPosition = new Vector3((t - 0.5f) * railLength, 0.08f, 0f);
-            }
+            return;
         }
+
+        float along = Mathf.Clamp(xCm / 100f, 0f, railLength);
+        float start = -railLength * 0.5f;
+        if (_prototype)
+        {
+            float half = Mathf.Min(_cartWidth * 0.5f, railLength * 0.5f);
+            float center = Mathf.Clamp(start + along, start + half, start + railLength - half);
+            _marker.localPosition = new Vector3(center - _cartCenterX, 0f, 0f);
+            return;
+        }
+
+        _marker.localPosition = new Vector3(start + along, PipeSection + 0.08f, 0f);
     }
 
     void AdoptPrototype(Transform root)
@@ -104,67 +128,153 @@ public class RailTwinController : MonoBehaviour
 
         FlattenToUnlit(cart.gameObject);
         _marker = cart;
-        _left = CollectRail(rails, "RailLeft_");
-        _right = CollectRail(rails, "RailRight_");
+        UsePipeSpec();
+        rails.localScale = Vector3.one;
+        LayoutPipeRun(rails);
+        _left = CollectPieces(rails, "RailLeft_");
+        _right = CollectPieces(rails, "RailRight_");
         if (_left == null || _right == null)
         {
             return;
         }
 
-        rails.localScale = Vector3.one;
-        float minX = float.PositiveInfinity;
-        float maxX = float.NegativeInfinity;
-        foreach (MeshRenderer renderer in _left)
-        {
-            MeshFilter filter = renderer.GetComponent<MeshFilter>();
-            if (filter == null || filter.sharedMesh == null)
-            {
-                continue;
-            }
-            Vector3 a = renderer.transform.TransformPoint(filter.sharedMesh.bounds.min);
-            Vector3 b = renderer.transform.TransformPoint(filter.sharedMesh.bounds.max);
-            minX = Mathf.Min(minX, Mathf.Min(a.x, b.x));
-            maxX = Mathf.Max(maxX, Mathf.Max(a.x, b.x));
-        }
-        float meshLength = Mathf.Max(0.05f, maxX - minX);
-        rails.localScale = new Vector3(railLength / meshLength, 1f, 1f);
-
+        EnsureJoints(rails, AverageZ(_left), AverageZ(_right));
         Bounds cartBounds = WorldBounds(cart.gameObject);
         _cartCenterX = cartBounds.center.x - cart.position.x;
         _cartWidth = cartBounds.size.x;
         _prototype = true;
         EnsureLight();
         SetupCamera();
-        Camera cam = Camera.main;
-        if (cam != null)
+        CaptureOrbit(new Vector3(0f, 0.04f, 0f));
+    }
+
+    void LayoutPipeRun(Transform rails)
+    {
+        if (rails.Find("PipeRun") != null)
         {
-            cam.transform.position = new Vector3(0f, 0.38f, -1.35f);
-            cam.transform.LookAt(new Vector3(0f, 0.06f, 0f));
-            CaptureOrbit(new Vector3(0f, 0.06f, 0f));
+            return;
+        }
+
+        var originals = new List<Transform>();
+        foreach (Transform child in rails)
+        {
+            originals.Add(child);
+        }
+        if (originals.Count == 0)
+        {
+            return;
+        }
+
+        var run = new GameObject("PipeRun");
+        run.transform.SetParent(rails, false);
+        float origin = -railLength * 0.5f;
+        float pipeScale = (PipeLength - JointGap) / PipeLength;
+        for (int i = 0; i < PipeCount; i++)
+        {
+            var pipe = new GameObject("Pipe_" + i.ToString("00"));
+            pipe.transform.SetParent(run.transform, false);
+            pipe.transform.localPosition = new Vector3(origin + (i + 0.5f) * PipeLength, 0f, 0f);
+            pipe.transform.localScale = new Vector3(pipeScale, 1f, 1f);
+            bool keepOriginal = i == PipeCount - 1;
+            foreach (Transform original in originals)
+            {
+                Transform piece;
+                if (keepOriginal)
+                {
+                    piece = original;
+                    piece.SetParent(pipe.transform, false);
+                }
+                else
+                {
+                    var copy = Instantiate(original.gameObject, pipe.transform);
+                    copy.name = original.name;
+                    piece = copy.transform;
+                }
+                piece.localPosition = Vector3.zero;
+                piece.localRotation = Quaternion.identity;
+                piece.localScale = Vector3.one;
+            }
         }
     }
 
-    static MeshRenderer[] CollectRail(Transform rails, string prefix)
+    void EnsureJoints(Transform rails, float zLeft, float zRight)
     {
-        var named = new List<Transform>();
-        foreach (Transform child in rails)
+        Transform run = rails.Find("PipeRun");
+        if (run == null || run.Find("PipeJoint_00") != null)
         {
-            if (child.name.StartsWith(prefix))
-            {
-                named.Add(child);
-            }
+            return;
         }
-        named.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
-        var found = new List<MeshRenderer>();
-        foreach (Transform child in named)
+
+        float origin = -railLength * 0.5f;
+        float y = PipeSection * 0.5f;
+        int index = 0;
+        for (int joint = 1; joint < PipeCount; joint++)
         {
-            MeshRenderer renderer = child.GetComponentInChildren<MeshRenderer>(true);
-            if (renderer != null)
-            {
-                found.Add(renderer);
-            }
+            float x = origin + joint * PipeLength;
+            MakeJoint(run, x, y, zLeft, index++);
+            MakeJoint(run, x, y, zRight, index++);
         }
-        return found.Count > 0 ? found.ToArray() : null;
+    }
+
+    static void MakeJoint(Transform parent, float x, float y, float z, int index)
+    {
+        var band = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        band.name = "PipeJoint_" + index.ToString("00");
+        band.transform.SetParent(parent, false);
+        band.transform.localScale = new Vector3(0.028f, 0.042f, 0.042f);
+        band.transform.localPosition = new Vector3(x, y, z);
+        var collider = band.GetComponent<Collider>();
+        if (collider != null)
+        {
+            DestroyImmediate(collider);
+        }
+        Tint(band.GetComponent<MeshRenderer>(), new Color(0.86f, 0.88f, 0.90f));
+    }
+
+    List<RailPiece> CollectPieces(Transform rails, string prefix)
+    {
+        var found = new List<RailPiece>();
+        var seen = new HashSet<MeshRenderer>();
+        foreach (Transform child in rails.GetComponentsInChildren<Transform>(true))
+        {
+            if (!child.name.StartsWith(prefix))
+            {
+                continue;
+            }
+            MeshRenderer renderer = child.GetComponent<MeshRenderer>();
+            if (renderer == null)
+            {
+                renderer = child.GetComponentInChildren<MeshRenderer>(true);
+            }
+            if (renderer == null || !seen.Add(renderer))
+            {
+                continue;
+            }
+            Vector3 local = transform.InverseTransformPoint(renderer.bounds.center);
+            found.Add(new RailPiece
+            {
+                Renderer = renderer,
+                AlongM = local.x + railLength * 0.5f,
+            });
+        }
+        found.Sort((a, b) => a.AlongM.CompareTo(b.AlongM));
+        return found.Count > 0 ? found : null;
+    }
+
+    static float AverageZ(List<RailPiece> pieces)
+    {
+        float sum = 0f;
+        int count = 0;
+        foreach (RailPiece piece in pieces)
+        {
+            if (piece.Renderer == null)
+            {
+                continue;
+            }
+            sum += piece.Renderer.bounds.center.z;
+            count++;
+        }
+        return count > 0 ? sum / count : 0f;
     }
 
     bool BuildPrototype()
@@ -267,8 +377,10 @@ public class RailTwinController : MonoBehaviour
         DestroyNamed("RailLeft");
         DestroyNamed("RailRight");
         DestroyNamed("GantryMarker");
-        _left = MakeRail("RailLeft", -railGap * 0.5f);
-        _right = MakeRail("RailRight", railGap * 0.5f);
+        UsePipeSpec();
+        _prototype = false;
+        _left = MakePipeRail("RailLeft", -railGap * 0.5f);
+        _right = MakePipeRail("RailRight", railGap * 0.5f);
         var marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
         marker.name = "GantryMarker";
         marker.transform.SetParent(transform, false);
@@ -277,7 +389,7 @@ public class RailTwinController : MonoBehaviour
         _marker = marker.transform;
         EnsureLight();
         SetupCamera();
-        CaptureOrbit(Vector3.zero);
+        CaptureOrbit(new Vector3(0f, 0.04f, 0f));
     }
 
     public void OrbitDrag(string csv)
@@ -317,7 +429,7 @@ public class RailTwinController : MonoBehaviour
         {
             return;
         }
-        _distance = Mathf.Clamp(_distance * factor, 0.4f, 4.5f);
+        _distance = Mathf.Clamp(_distance * factor, 0.8f, 12f);
         ApplyOrbit();
     }
 
@@ -355,38 +467,56 @@ public class RailTwinController : MonoBehaviour
         cam.transform.LookAt(_orbitFocus);
     }
 
-    MeshRenderer[] MakeRail(string name, float z)
+    List<RailPiece> MakePipeRail(string name, float z)
     {
         var root = new GameObject(name);
         root.transform.SetParent(transform, false);
-        var renderers = new MeshRenderer[segmentCount];
-        float seg = railLength / segmentCount;
-        for (int i = 0; i < segmentCount; i++)
+        var pieces = new List<RailPiece>();
+        const int slicesPerPipe = 4;
+        float slice = PipeLength / slicesPerPipe;
+        float origin = -railLength * 0.5f;
+        float y = PipeSection * 0.5f;
+        for (int i = 0; i < PipeCount; i++)
         {
-            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            cube.name = name + "_" + i;
-            cube.transform.SetParent(root.transform, false);
-            cube.transform.localScale = new Vector3(seg * 0.88f, 0.045f, 0.09f);
-            float x = -railLength * 0.5f + (i + 0.5f) * seg;
-            cube.transform.localPosition = new Vector3(x, 0f, z);
-            var renderer = cube.GetComponent<MeshRenderer>();
-            Tint(renderer, RiskColor(0f));
-            renderers[i] = renderer;
+            for (int s = 0; s < slicesPerPipe; s++)
+            {
+                float along = i * PipeLength + (s + 0.5f) * slice;
+                var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                cube.name = name + "_" + i.ToString("00") + "_" + s.ToString("00");
+                cube.transform.SetParent(root.transform, false);
+                cube.transform.localScale = new Vector3(slice - JointGap / slicesPerPipe, PipeSection, PipeSection);
+                cube.transform.localPosition = new Vector3(origin + along, y, z);
+                var renderer = cube.GetComponent<MeshRenderer>();
+                Tint(renderer, RiskColor(0f));
+                pieces.Add(new RailPiece { Renderer = renderer, AlongM = along });
+            }
+            if (i < PipeCount - 1)
+            {
+                MakeJoint(root.transform, origin + (i + 1) * PipeLength, y, z, i);
+            }
         }
-        return renderers;
+        return pieces;
     }
 
-    static void Paint(MeshRenderer[] rails, float[] values)
+    static void Paint(List<RailPiece> rails, float[] values, float lengthCm)
     {
         if (rails == null)
         {
             return;
         }
 
-        for (int i = 0; i < rails.Length; i++)
+        int count = values != null ? values.Length : 0;
+        float segCm = (count > 0 && lengthCm > 0f) ? lengthCm / count : 0f;
+        foreach (RailPiece piece in rails)
         {
-            float v = (values != null && i < values.Length) ? Mathf.Clamp01(values[i]) : 0f;
-            Tint(rails[i], RiskColor(v));
+            float cm = piece.AlongM * 100f;
+            float v = 0f;
+            if (count > 0 && segCm > 0f && cm >= 0f && cm < lengthCm)
+            {
+                int idx = Mathf.Clamp(Mathf.FloorToInt(cm / segCm), 0, count - 1);
+                v = Mathf.Clamp01(values[idx]);
+            }
+            Tint(piece.Renderer, RiskColor(v));
         }
     }
 
@@ -422,9 +552,9 @@ public class RailTwinController : MonoBehaviour
         cam.backgroundColor = new Color(0.02f, 0.04f, 0.08f);
         cam.fieldOfView = 40f;
         cam.nearClipPlane = 0.05f;
-        cam.farClipPlane = 20f;
-        cam.transform.position = new Vector3(0f, 0.62f, -1.05f);
-        cam.transform.LookAt(new Vector3(0f, 0f, 0f));
+        cam.farClipPlane = 40f;
+        cam.transform.position = new Vector3(0f, 1.25f, -5.1f);
+        cam.transform.LookAt(new Vector3(0f, 0.04f, 0f));
     }
 
     static void EnsureLight()
