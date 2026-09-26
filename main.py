@@ -854,6 +854,7 @@ def build_influx_point(
         "gyro_x": "mpu_gyro_x",
         "gyro_y": "mpu_gyro_y",
         "gyro_z": "mpu_gyro_z",
+        "temp_c": "mpu_temp_c",
     }
     integer_fields = {
         "adc_raw": "adc_raw",

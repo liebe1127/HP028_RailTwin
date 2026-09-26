@@ -183,6 +183,12 @@ def normalize_sensor_batch(
                 "gyro_x": gyro[0],
                 "gyro_y": gyro[1],
                 "gyro_z": gyro[2],
+                "temp_c": _optional_float(
+                    raw_sample.get("temp_c"),
+                    f"samples[{index}].temp_c",
+                    minimum=-40.0,
+                    maximum=125.0,
+                ),
             }
         )
 

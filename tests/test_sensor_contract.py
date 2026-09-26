@@ -54,6 +54,7 @@ class SensorContractTests(unittest.TestCase):
         self.assertEqual(first["position_mm"], 100.0)
         self.assertAlmostEqual(first["_received_at"], 9.99)
         self.assertAlmostEqual(second["_received_at"], 10.0)
+        self.assertIsNone(first["temp_c"])
 
     def test_rejects_invalid_rail_side(self) -> None:
         batch = valid_batch()

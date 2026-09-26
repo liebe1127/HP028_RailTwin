@@ -55,12 +55,18 @@ LIMIT_SOURCE = {
 }
 
 
+# 자이로는 각속도다. 이 시간보다 오래 샘플이 끊기면 각도를 중력 기울기로 다시 잡는다.
+GYRO_TILT_GAP_S = 1.0
+# 적분 각도가 흔들리지 않게 중력 기울기로 천천히 붙잡는 시간.
+GYRO_TILT_TAU_S = 0.5
+
+
 def estimate_roll_deg(
     accel_x: float | None,
     accel_y: float | None,
     accel_z: float | None,
 ) -> float | None:
-    """중력 기준 롤. 자이로 각속도가 아니라 가속도 기울기 각도다."""
+    """중력으로 본 좌우 기울기. 자이로 각도의 기준점이다."""
     if not isinstance(accel_x, (int, float)) or not isinstance(accel_z, (int, float)):
         return None
     if accel_x == 0.0 and accel_z == 0.0:
@@ -186,6 +192,8 @@ class DefectRuleEngine:
         self.direction = 1
         self.pass_count = 1
         self.pass_started_at = time.time()
+        self.roll_deg: float | None = None
+        self.roll_at: float | None = None
 
     def evaluate_side(self, sample: dict, side: str) -> dict:
         self.pending[side] = sample
@@ -238,10 +246,8 @@ class DefectRuleEngine:
             return None
         if abs(pos_l - pos_r) > POSITION_MATCH_MM:
             return None
-        ax = _mean_axis(left, right, "accel_x")
-        az = _mean_axis(left, right, "accel_z")
-        tilt = estimate_roll_deg(ax, _mean_axis(left, right, "accel_y"), az)
         recorded = _as_float(left.get("_received_at")) or _as_float(right.get("_received_at"))
+        tilt = self._tilt_from_gyro(left, right, recorded if recorded is not None else time.time())
         return SamplePoint(
             position_mm=(pos_l + pos_r) / 2.0,
             m_mm=(gap_l + gap_r) / 2.0,
@@ -250,6 +256,37 @@ class DefectRuleEngine:
             tilt_deg=0.0 if tilt is None else tilt,
             recorded_at=recorded if recorded is not None else time.time(),
         )
+
+    def _tilt_from_gyro(self, left: dict, right: dict, recorded_at: float) -> float:
+        """좌우 기울기 φ. 칩 Y 자이로(레일 축 회전)를 적분하고, 중력 기울기로 드리프트를 잡는다.
+
+        인쇄된 X는 좌우, Z는 위다. 좌우로 기우는 회전은 Y축이다.
+        MPU-6050에서 Y축 양의 회전은 atan2(ax, az)를 줄이므로 부호를 뒤집는다.
+        """
+        gravity = estimate_roll_deg(
+            _mean_axis(left, right, "accel_x"),
+            _mean_axis(left, right, "accel_y"),
+            _mean_axis(left, right, "accel_z"),
+        )
+        gyro_y = _mean_axis(left, right, "gyro_y")
+        if gyro_y is None or self.roll_deg is None or self.roll_at is None:
+            self.roll_deg = 0.0 if gravity is None else gravity
+            self.roll_at = recorded_at
+            return self.roll_deg
+        dt = recorded_at - self.roll_at
+        if dt <= 0 or dt > GYRO_TILT_GAP_S:
+            self.roll_deg = 0.0 if gravity is None else gravity
+            self.roll_at = recorded_at
+            return self.roll_deg
+        predicted = self.roll_deg - math.degrees(gyro_y) * dt
+        if gravity is None:
+            blended = predicted
+        else:
+            gyro_weight = GYRO_TILT_TAU_S / (GYRO_TILT_TAU_S + dt)
+            blended = gyro_weight * predicted + (1.0 - gyro_weight) * gravity
+        self.roll_deg = blended
+        self.roll_at = recorded_at
+        return blended
 
     def _note_direction(self, position_mm: float) -> None:
         previous = self.previous_position_mm

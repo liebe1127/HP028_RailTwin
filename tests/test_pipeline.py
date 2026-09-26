@@ -51,6 +51,49 @@ class PipelineTests(unittest.TestCase):
         main.reset_rail_risk_state()
         main.latest_ws_payload_by_side.clear()
 
+    def test_temperature_is_stored_and_not_shown_live(self) -> None:
+        sample = current_sample()
+        sample["temp_c"] = 28.5
+        point = main.build_influx_point(
+            sample,
+            side="left",
+            source="mqtt",
+            evaluation={"score": 0.0},
+        )
+        self.assertIn("mpu_temp_c=28.5", point.to_line_protocol())
+        payload = main.build_side_ws_payload(
+            sample,
+            side="left",
+            evaluation={"score": 0.0, "stage": "ok", "defect_type": "normal"},
+            rail_risk=[0.0],
+            defects=[],
+        )
+        self.assertNotIn("temp_c", payload)
+        html = (
+            Path(__file__).resolve().parents[1] / "frontend" / "index.html"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("temp_c", html)
+        self.assertNotIn("mpu_temp_c", html)
+
+    def test_cross_level_tilt_follows_gyro(self) -> None:
+        engine = DefectRuleEngine(segment_count=20, rail_length_cm=100.0)
+        # 중력 기울기는 0도이다. Y축 자이로가 음이면 좌우 기울기가 늘어난다.
+        for step in range(8):
+            stamp = 100.0 + step * 0.05
+            sample = {
+                "_received_at": stamp,
+                "position_mm": 100.0 + step,
+                "sensor_distance_mm": 4.0,
+                "accel_x": 0.0,
+                "accel_y": 0.0,
+                "accel_z": 9.80665,
+                "gyro_x": 0.0,
+                "gyro_y": -0.4,
+                "gyro_z": 0.0,
+            }
+            engine.evaluate_pair(dict(sample), dict(sample))
+        self.assertGreater(engine.roll_deg or 0.0, 5.0)
+
     def test_roll_uses_accelerometer_tilt(self) -> None:
         roll = estimate_roll_deg(1.0, 0.0, 9.8)
         self.assertIsNotNone(roll)
@@ -146,6 +189,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("abnormal_score=0.6", line)
         self.assertIn("delta_mm=6", line)
         self.assertIn("apeak=0.1", line)
+        self.assertNotIn("mpu_temp_c", line)
         self.assertNotIn("pred_rail_deform", line)
         self.assertNotIn("adxl_accel", line)
 
