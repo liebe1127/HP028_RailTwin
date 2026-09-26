@@ -36,13 +36,22 @@ from typing import Optional
 import numpy as np
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 from influxdb_client import Point, WritePrecision
 
 from rail_defect import DefectRuleEngine
+from run_export import (
+    ExportTooLarge,
+    build_download,
+    experiment_labels,
+    fetch_run_samples,
+    fetch_run_starts,
+    render_runs_page,
+    validate_boot_id,
+)
 from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_batch
 
 # ─────────────────────────────────────────────
@@ -1071,6 +1080,63 @@ async def health_check():
 @app.get("/queue/size", summary="큐 현재 크기 조회")
 async def queue_size():
     return {"queue_size": sensor_queue.qsize()}
+
+
+def _influx_read_args() -> dict:
+    return {
+        "url": INFLUX_URL,
+        "token": INFLUX_TOKEN,
+        "org": INFLUX_ORG,
+        "bucket": INFLUX_BUCKET,
+    }
+
+
+@app.get("/runs", response_class=HTMLResponse, summary="저장된 주행 CSV 목록")
+async def runs_page():
+    """최근 90일의 전원 구간마다 CSV 한 파일 링크를 보여 준다."""
+    if not INFLUX_WRITE_ENABLED:
+        return HTMLResponse(
+            render_runs_page([], "InfluxDB 연결 정보가 없어 주행을 읽을 수 없습니다."),
+            status_code=503,
+        )
+    try:
+        starts = await fetch_run_starts(**_influx_read_args())
+    except Exception:
+        logger.exception("주행 목록 조회 실패")
+        return HTMLResponse(
+            render_runs_page([], "InfluxDB에서 주행 목록을 읽지 못했습니다."),
+            status_code=502,
+        )
+    return HTMLResponse(render_runs_page(experiment_labels(starts)))
+
+
+@app.get("/runs/{boot_id}.csv", summary="주행 하나의 전체 항목 CSV")
+async def download_run_csv(boot_id: str):
+    """간격·위치·가속도·자이로·온도·판정값을 평균 없이 한 파일로 받는다."""
+    try:
+        safe_id = validate_boot_id(boot_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="boot_id 형식이 아닙니다") from None
+    if not INFLUX_WRITE_ENABLED:
+        raise HTTPException(status_code=503, detail="InfluxDB 연결 정보가 없습니다")
+    try:
+        samples = await fetch_run_samples(**_influx_read_args(), boot_id=safe_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="boot_id 형식이 아닙니다") from None
+    except Exception:
+        logger.exception("주행 CSV 조회 실패 boot_id=%s", safe_id)
+        raise HTTPException(status_code=502, detail="InfluxDB에서 이 주행을 읽지 못했습니다") from None
+    if not samples:
+        raise HTTPException(status_code=404, detail="이 주행에 저장된 샘플이 없습니다")
+    try:
+        body, filename = build_download(samples, safe_id)
+    except ExportTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/dashboard", summary="레일 변형 웹 대시보드")
