@@ -292,6 +292,10 @@
           <div id="zone-cross" class="zone-cross" title="시연: 좌우 높이차 80~90cm"></div>
           <div id="crane-dot" class="crane-dot" style="left:0%"></div>
         </div>
+        <div class="flex justify-between text-[10px] text-slate-600 mt-1 mono">
+          <span>0</span>
+          <span id="crane-track-end">300 cm</span>
+        </div>
       </div>
 
       <div class="grid grid-cols-3 gap-2 text-center">
@@ -476,6 +480,7 @@
     const STAGE_LABELS = { ok: '정상', caution: '주의', danger: '위험' };
     const MOTION_LABELS = { cruise: '평속', slow: '감속 0.1 m/s', stop: '진입 전 정지' };
     const FALLBACK_RAIL_CM = 100;
+    const LIVE_RAIL_CM = 300;
     const UI_MIN_MS = 80;
     const SPARK_POINTS = 90;
     const FLAG_BITS = [
@@ -794,7 +799,8 @@
         document.getElementById(id).classList.toggle('show', source === 'demo' || data.simulation);
       });
       if (hasPosition) {
-        const span = railSpanCm(left, right);
+        const span = craneTrackSpanCm(left, right, source, data.simulation);
+        document.getElementById('crane-track-end').textContent = `${span.toFixed(0)} cm`;
         document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / span) * 100)) + '%';
         const mag = accelMag(chartSide);
         const badge = document.getElementById('zone-badge');
@@ -990,6 +996,11 @@
         if (Number.isFinite(n) && n > 0) return n;
       }
       return FALLBACK_RAIL_CM;
+    }
+
+    function craneTrackSpanCm(left, right, source, simulation) {
+      if (source === 'demo' || simulation) return railSpanCm(left, right);
+      return LIVE_RAIL_CM;
     }
 
     function segmentCountOf(left, right) {
