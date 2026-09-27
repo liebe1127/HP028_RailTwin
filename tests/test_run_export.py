@@ -8,6 +8,8 @@ from run_export import (
     SAMPLE_FLUX,
     ExportTooLarge,
     build_download,
+    content_disposition,
+    csv_filename,
     experiment_labels,
     format_seoul,
     join_samples,
@@ -72,7 +74,16 @@ class RunExportTests(unittest.TestCase):
         self.assertEqual(row["left_mpu_temp_c"], "28.5")
         self.assertEqual(row["left_adc_raw"], "1000")
         self.assertEqual(row["boot_id"], "b12ced2f")
-        self.assertTrue(filename.startswith("run-20260926-210841-"))
+        self.assertEqual(filename, "run-20260926-210841-b12ced2f.csv")
+        named = csv_filename(
+            "b12ced2f",
+            left_time,
+            "9월 26일 1차 실험",
+        )
+        self.assertEqual(named, "9월 26일 1차 실험-20260926-210841-b12ced2f.csv")
+        header = content_disposition(named, "b12ced2f")
+        self.assertIn("filename*=UTF-8''", header)
+        self.assertIn("%EC%9D%BC%201%EC%B0%A8%20%EC%8B%A4%ED%97%98", header)
         self.assertNotIn("aggregateWindow", SAMPLE_FLUX)
         self.assertIn("boot_id == boot_id", SAMPLE_FLUX)
 

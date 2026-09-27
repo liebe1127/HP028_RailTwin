@@ -46,6 +46,7 @@ from rail_defect import DefectRuleEngine
 from run_export import (
     ExportTooLarge,
     build_download,
+    content_disposition,
     experiment_labels,
     fetch_run_samples,
     fetch_run_starts,
@@ -1128,14 +1129,23 @@ async def download_run_csv(boot_id: str):
         raise HTTPException(status_code=502, detail="InfluxDB에서 이 주행을 읽지 못했습니다") from None
     if not samples:
         raise HTTPException(status_code=404, detail="이 주행에 저장된 샘플이 없습니다")
+    label = None
     try:
-        body, filename = build_download(samples, safe_id)
+        starts = await fetch_run_starts(**_influx_read_args())
+        label = next(
+            (item["label"] for item in experiment_labels(starts) if item["boot_id"] == safe_id),
+            None,
+        )
+    except Exception:
+        logger.exception("주행 이름 조회 실패 boot_id=%s", safe_id)
+    try:
+        body, filename = build_download(samples, safe_id, label)
     except ExportTooLarge as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     return Response(
         content=body,
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(filename, safe_id)},
     )
 
 

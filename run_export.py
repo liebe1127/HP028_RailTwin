@@ -12,6 +12,7 @@ import io
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 
@@ -188,8 +189,30 @@ def _preferred_time(row: dict) -> datetime | None:
     return None
 
 
-def render_csv(rows: list[dict], boot_id: str) -> tuple[str, str]:
-    """CSV 본문과 파일 이름을 만든다. 파일 이름은 첫 샘플의 서울 시각을 쓴다."""
+def csv_filename(boot_id: str, first_time: datetime | None, label: str | None = None) -> str:
+    """목록과 같은 실험 이름 뒤에 서울 시각과 전원 번호를 붙인다."""
+    boot_id = validate_boot_id(boot_id)
+    stamp = ""
+    if first_time is not None:
+        local = first_time.astimezone(SEOUL) if first_time.tzinfo else first_time.replace(tzinfo=timezone.utc).astimezone(SEOUL)
+        stamp = local.strftime("%Y%m%d-%H%M%S")
+    if label and stamp:
+        return f"{label}-{stamp}-{boot_id}.csv"
+    if label:
+        return f"{label}-{boot_id}.csv"
+    if stamp:
+        return f"run-{stamp}-{boot_id}.csv"
+    return f"run-{boot_id}.csv"
+
+
+def content_disposition(filename: str, boot_id: str) -> str:
+    """한글 파일 이름을 브라우저가 유지하도록 UTF-8 이름을 같이 보낸다."""
+    quoted = quote(filename, safe="")
+    return f"attachment; filename=\"run-{boot_id}.csv\"; filename*=UTF-8''{quoted}"
+
+
+def render_csv(rows: list[dict], boot_id: str, label: str | None = None) -> tuple[str, str]:
+    """CSV 본문과 파일 이름을 만든다. 이름은 실험 이름, 첫 샘플 시각, 전원 번호다."""
     boot_id = validate_boot_id(boot_id)
     headers = csv_headers()
     buffer = io.StringIO()
@@ -216,12 +239,7 @@ def render_csv(rows: list[dict], boot_id: str) -> tuple[str, str]:
                 values.append(format_cell(field, row.get(f"{side}_{field}")))
         writer.writerow(values)
 
-    if first_time is None:
-        filename = f"run-{boot_id}.csv"
-    else:
-        local = first_time.astimezone(SEOUL) if first_time.tzinfo else first_time.replace(tzinfo=timezone.utc).astimezone(SEOUL)
-        filename = local.strftime("run-%Y%m%d-%H%M%S-") + boot_id + ".csv"
-    return buffer.getvalue(), filename
+    return buffer.getvalue(), csv_filename(boot_id, first_time, label)
 
 
 def experiment_labels(starts: Iterable[tuple[str, datetime]]) -> list[dict]:
@@ -400,8 +418,12 @@ async def fetch_run_starts(
     return _starts_from_tables(tables)
 
 
-def build_download(samples: Iterable[dict], boot_id: str) -> tuple[str, str]:
-    return render_csv(join_samples(samples), boot_id)
+def build_download(
+    samples: Iterable[dict],
+    boot_id: str,
+    label: str | None = None,
+) -> tuple[str, str]:
+    return render_csv(join_samples(samples), boot_id, label)
 
 
 _BUCKET_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
