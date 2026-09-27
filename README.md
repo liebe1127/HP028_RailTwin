@@ -1,6 +1,6 @@
 # 가변 계측–레일 이상 구간 디지털 트윈 기반 갠트리 크레인 안전관리 시스템
 
-![하부 레일 이상 구간 디지털 트윈 시스템 아키텍처](docs/system-architecture.png)
+![하부 주행 레일 이상 구간 디지털 트윈 4단계 개발 로드맵](docs/development-roadmap.jpg)
 
 ## 프로젝트 소개
 
