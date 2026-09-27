@@ -4,7 +4,7 @@
 // 전진은 빨간 모터 기판 쪽. 2026-09-25 실물에서 f 명령으로 확인했다.
 // 전진을 바라봤을 때 코드의 왼쪽이 어느 쪽인지는 아직 확정하지 않았다.
 
-constexpr char FIRMWARE_VERSION[] = "0.6.3-draft";
+constexpr char FIRMWARE_VERSION[] = "0.6.4-draft";
 
 constexpr int SDA_L = 11;
 constexpr int SCL_L = 12;
@@ -56,10 +56,14 @@ constexpr int POS_SIGN_R = -1;
 constexpr uint8_t DUTY_CRUISE = 120;
 constexpr uint8_t DUTY_SLOW = 60;
 
-// DevKitC-1의 BOOT 버튼은 GPIO0. 켜진 뒤에 누르면 전진 80초.
+// DevKitC-1의 BOOT 버튼은 GPIO0.
+// 300 cm 레일에서 출발 자세의 구동바퀴 접점은 왼쪽 끝에서 58 cm다.
+// 그 접점이 오른쪽 끝에 닿으면 왼쪽 엔코더는 242 cm다.
+// BOOT 전진은 왼쪽이 242 cm가 되거나 72초가 되면 멈춘다.
 // RST와 같이 누르면 다운로드 모드라서, 주행 버튼으로 쓰지 않는다.
 constexpr int PIN_BOOT = 0;
-constexpr uint32_t BUTTON_RUN_MS = 80000;
+constexpr uint32_t BUTTON_RUN_MS = 72000;
+constexpr float BUTTON_STOP_MM = 2420.0f;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 250;
 
 // 중력(각 칩의 정지 오프셋)을 뺀 세로 가속도가 이 값을 넘으면 통신과 상관없이 멈춘다.

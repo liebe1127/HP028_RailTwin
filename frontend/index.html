@@ -296,6 +296,7 @@
           <span>0</span>
           <span id="crane-track-end">300 cm</span>
         </div>
+        <p id="crane-track-note" class="text-[10px] text-slate-500 mt-1">점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 242 cm를 구르면 300 cm 끝입니다.</p>
       </div>
 
       <div class="grid grid-cols-3 gap-2 text-center">
@@ -481,6 +482,7 @@
     const MOTION_LABELS = { cruise: '평속', slow: '감속 0.1 m/s', stop: '진입 전 정지' };
     const FALLBACK_RAIL_CM = 100;
     const LIVE_RAIL_CM = 300;
+    const WHEEL_START_CM = 58;
     const UI_MIN_MS = 80;
     const SPARK_POINTS = 90;
     const FLAG_BITS = [
@@ -785,23 +787,31 @@
       lastLeft = left;
       lastRight = right;
       const chartSide = leftHasLive || mirrored ? left : right || left;
-      const x = left.distance_x ?? (right && right.distance_x);
+      const encoderCm = left.distance_x ?? (right && right.distance_x);
+      const live = source !== 'demo' && !data.simulation;
       const seq = left.sample_seq ?? (right && right.sample_seq);
 
       updateHz();
 
-      const xn = Number(x);
+      const xn = Number(encoderCm);
       const hasPosition = Number.isFinite(xn);
+      const railCm = hasPosition ? (live ? wheelRailCm(xn) : xn) : null;
       document.getElementById('val-x').textContent = hasPosition
-        ? `${xn.toFixed(0)} cm`
+        ? `${railCm.toFixed(0)} cm`
         : (chartSide.position_mm == null ? '위치 없음' : '—');
+      const trackNote = document.getElementById('crane-track-note');
+      if (trackNote) {
+        trackNote.textContent = live
+          ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 242 cm를 구르면 300 cm 끝입니다.'
+          : '더미 주행은 시뮬레이션 레일 위치입니다.';
+      }
       ['zone-joint', 'zone-vertical', 'zone-cross'].forEach((id) => {
         document.getElementById(id).classList.toggle('show', source === 'demo' || data.simulation);
       });
       if (hasPosition) {
         const span = craneTrackSpanCm(left, right, source, data.simulation);
         document.getElementById('crane-track-end').textContent = `${span.toFixed(0)} cm`;
-        document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (xn / span) * 100)) + '%';
+        document.getElementById('crane-dot').style.left = Math.min(100, Math.max(0, (railCm / span) * 100)) + '%';
         const mag = accelMag(chartSide);
         const badge = document.getElementById('zone-badge');
         if (mag != null && (Number(chartSide.abnormal_score) || 0) > 0) {
@@ -854,9 +864,11 @@
 
       paintRisk(riskLeftEl, left.rail_risk);
       if (right) paintRisk(riskRightEl, right.rail_risk);
-      drawRailFallback(left, right, x, railSpanCm(left, right));
-      pushUnityState(left, right, x);
-      renderDefectList(left, right);
+      const markerCm = hasPosition ? railCm : null;
+      const drawSpan = live ? LIVE_RAIL_CM : railSpanCm(left, right);
+      drawRailFallback(left, right, markerCm, drawSpan, live);
+      pushUnityState(left, right, live ? markerCm : encoderCm, live);
+      renderDefectList(left, right, live);
 
       const mag = accelMag(chartSide);
       const gap = gapValue(chartSide);
@@ -937,7 +949,7 @@
         document.getElementById('meta-queue').textContent.replace(/수신 \d+/, `수신 ${msgCount}`);
 
       pushLog(
-        `${source} seq=${seq ?? '—'} x=${fmt(x, 0)}cm · m=${fmt(featureSide.m_mm)} Δ=${fmt(featureSide.delta_mm)} · ${typeName}/${stageName}`
+        `${source} seq=${seq ?? '—'} 접점=${fmt(railCm, 0)}cm 엔코더=${fmt(encoderCm, 0)}cm · m=${fmt(featureSide.m_mm)} Δ=${fmt(featureSide.delta_mm)} · ${typeName}/${stageName}`
       );
     }
 
@@ -964,7 +976,7 @@
       }
     }
 
-    function renderDefectList(left, right) {
+    function renderDefectList(left, right, live) {
       const el = document.getElementById('defect-list');
       const items = []
         .concat((left && left.defects) || [])
@@ -982,11 +994,18 @@
       }).map((d) => {
         const name = DEFECT_LABELS[d.defect_type] || d.defect_type || '이상';
         const stage = STAGE_LABELS[d.stage] || '';
-        const fromCm = Number.isFinite(Number(d.from_mm)) ? (Number(d.from_mm) / 10).toFixed(0) : '—';
-        const toCm = Number.isFinite(Number(d.to_mm)) ? (Number(d.to_mm) / 10).toFixed(0) : '—';
+        const shift = live ? WHEEL_START_CM : 0;
+        const fromCm = Number.isFinite(Number(d.from_mm))
+          ? (Number(d.from_mm) / 10 + shift).toFixed(0) : '—';
+        const toCm = Number.isFinite(Number(d.to_mm))
+          ? (Number(d.to_mm) / 10 + shift).toFixed(0) : '—';
         const side = d.side === 'left' ? '좌' : (d.side === 'right' ? '우' : '좌우');
         return `${name}·${stage} ${side} ${fromCm}–${toCm}cm`;
       }).join(' · ');
+    }
+
+    function wheelRailCm(encoderCm) {
+      return Math.min(LIVE_RAIL_CM, Math.max(0, WHEEL_START_CM + Number(encoderCm)));
     }
 
     function railSpanCm(left, right) {
@@ -1012,7 +1031,7 @@
       return (risks && risks.length) || 20;
     }
 
-    function drawRailFallback(left, right, x, spanCm) {
+    function drawRailFallback(left, right, x, spanCm, live) {
       const canvas = document.getElementById('rail-fallback');
       if (!canvas || unityInstance) return;
       const dpr = window.devicePixelRatio || 1;
@@ -1028,6 +1047,7 @@
       ctx.fillRect(0, 0, w, h);
       const pad = 24;
       const railH = 18;
+      const span = Number(spanCm) > 0 ? Number(spanCm) : FALLBACK_RAIL_CM;
       const ys = [h * 0.38, h * 0.62];
       const sides = [left, right];
       sides.forEach((side, si) => {
@@ -1035,16 +1055,21 @@
           ? side.rail_risk
           : Array(segmentCountOf(left, right)).fill(0);
         const n = risks.length;
+        const serverLen = railSpanCm(left, right);
+        const seg = n > 0 ? serverLen / n : serverLen;
+        const origin = live ? WHEEL_START_CM : 0;
         const y = ys[si] - railH / 2;
         for (let i = 0; i < n; i++) {
-          const x0 = pad + (i / n) * (w - pad * 2);
-          const x1 = pad + ((i + 1) / n) * (w - pad * 2);
+          const a = origin + i * seg;
+          const b = origin + (i + 1) * seg;
+          if (b <= 0 || a >= span) continue;
+          const x0 = pad + (Math.max(0, a) / span) * (w - pad * 2);
+          const x1 = pad + (Math.min(span, b) / span) * (w - pad * 2);
           ctx.fillStyle = riskColor(risks[i]);
           ctx.fillRect(x0, y, Math.max(1, x1 - x0 - 1), railH);
         }
       });
       if (Number.isFinite(Number(x))) {
-        const span = Number(spanCm) > 0 ? Number(spanCm) : FALLBACK_RAIL_CM;
         const gx = pad + (Math.min(span, Math.max(0, Number(x))) / span) * (w - pad * 2);
         ctx.fillStyle = '#e2e8f0';
         ctx.fillRect(gx - 4, ys[0] - 16, 8, ys[1] - ys[0] + 32);
@@ -1055,12 +1080,13 @@
       ctx.fillText('RIGHT', pad, ys[1] + railH + 16);
     }
 
-    function unityStateJson(left, right, x) {
+    function unityStateJson(left, right, x, wheelContact) {
       const pack = (side) => (side && Array.isArray(side.rail_risk) ? side.rail_risk : []).map(
         (v) => Number(v) || 0
       );
       return JSON.stringify({
         x: Number.isFinite(Number(x)) ? Number(x) : 0,
+        wheel: wheelContact ? 1 : 0,
         len: railSpanCm(left, right),
         n: segmentCountOf(left, right),
         l: pack(left),
@@ -1068,10 +1094,10 @@
       });
     }
 
-    function pushUnityState(left, right, x) {
+    function pushUnityState(left, right, x, wheelContact) {
       if (!unityInstance) return;
       try {
-        unityInstance.SendMessage('RailTwin', 'ApplyState', unityStateJson(left, right, x));
+        unityInstance.SendMessage('RailTwin', 'ApplyState', unityStateJson(left, right, x, wheelContact));
       } catch (err) {
         /* Unity 미연결 시 폴백 유지 */
       }
@@ -1206,11 +1232,13 @@
     }
 
     function showCartAtStart() {
-      document.getElementById('val-x').textContent = '0 cm';
-      document.getElementById('crane-dot').style.left = '0%';
-      const span = railSpanCm(lastLeft, lastRight);
-      drawRailFallback(lastLeft, lastRight, 0, span);
-      pushUnityState(lastLeft, lastRight, 0);
+      const live = !demoMode;
+      const cm = live ? WHEEL_START_CM : 0;
+      const span = live ? LIVE_RAIL_CM : railSpanCm(lastLeft, lastRight);
+      document.getElementById('val-x').textContent = `${cm.toFixed(0)} cm`;
+      document.getElementById('crane-dot').style.left = `${(cm / span) * 100}%`;
+      drawRailFallback(lastLeft, lastRight, cm, span, live);
+      pushUnityState(lastLeft, lastRight, cm, live);
     }
 
     async function resetPosition() {

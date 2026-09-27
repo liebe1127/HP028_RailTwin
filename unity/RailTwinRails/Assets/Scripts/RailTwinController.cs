@@ -4,9 +4,10 @@ using UnityEngine;
 
 /// <summary>
 /// 대시보드 JS가 SendMessage("RailTwin", "ApplyState", json)로 이상 구간을 넣는다.
-/// JSON: {"x":45,"len":100,"n":20,"l":[...],"r":[...]}  — x·len은 cm.
+/// JSON: {"x":45,"len":100,"n":20,"wheel":1,"l":[...],"r":[...]}  — x·len은 cm.
 /// 레일은 second-prototype의 각파이프(25×25 mm, 60 cm)를 5개 이어 300 cm다.
-/// x는 그 300 cm 레일 시작에서의 위치이고, len 구간만 위험색을 칠한다.
+/// wheel이 1이면 x는 구동바퀴 접점의 레일 위치다. 엔코더 0은 접점 58 cm, 242 cm를 구르면 300 cm.
+/// 차체 앞면은 접점보다 2 cm 앞에 있다. len은 엔코더 좌표의 구간 길이고, 색은 58 cm를 더해 칠한다.
 /// 보이는 대차는 second-prototype 하나다. 모델 +X 를 화면의 먼 쪽 레일에 두었고,
 /// 그 레일에 left 색을 칠한다. 이 좌우 대응은 사진으로 아직 확인하지 않았다.
 /// </summary>
@@ -16,6 +17,8 @@ public class RailTwinController : MonoBehaviour
     const float PipeLength = 0.6f;
     const float PipeSection = 0.025f;
     const float JointGap = 0.015f;
+    const float WheelStartCm = 58f;
+    const float NosePastWheelM = 0.02f;
 
     public int segmentCount = 20;
     public float railLength = PipeCount * PipeLength;
@@ -72,6 +75,7 @@ public class RailTwinController : MonoBehaviour
         }
 
         float x = ReadFloat(json, "x");
+        bool wheelContact = ReadFloat(json, "wheel") > 0.5f;
         float lengthCm = ReadFloat(json, "len");
         if (lengthCm <= 0f)
         {
@@ -89,29 +93,41 @@ public class RailTwinController : MonoBehaviour
         {
             RebuildRails();
         }
-        Paint(_left, left, lengthCm);
-        Paint(_right, right, lengthCm);
-        PlaceMarker(x);
+        Paint(_left, left, lengthCm, wheelContact);
+        Paint(_right, right, lengthCm, wheelContact);
+        PlaceMarker(x, wheelContact);
     }
 
-    void PlaceMarker(float xCm)
+    void PlaceMarker(float xCm, bool wheelContact)
     {
         if (_marker == null)
         {
             return;
         }
 
-        float along = Mathf.Clamp(xCm / 100f, 0f, railLength);
         float start = -railLength * 0.5f;
+        if (_prototype && wheelContact)
+        {
+            float along = Mathf.Clamp(xCm / 100f, 0f, railLength);
+            float half = Mathf.Min(_cartWidth * 0.5f, railLength * 0.5f);
+            float wheelAhead = Mathf.Max(0f, half - NosePastWheelM);
+            float minCenter = half;
+            float maxCenter = railLength - half + NosePastWheelM;
+            float centerAlong = Mathf.Clamp(along - wheelAhead, minCenter, maxCenter);
+            _marker.localPosition = new Vector3(start + centerAlong - _cartCenterX, 0f, 0f);
+            return;
+        }
+
+        float alongPlain = Mathf.Clamp(xCm / 100f, 0f, railLength);
         if (_prototype)
         {
             float half = Mathf.Min(_cartWidth * 0.5f, railLength * 0.5f);
-            float center = Mathf.Clamp(start + along, start + half, start + railLength - half);
+            float center = Mathf.Clamp(start + alongPlain, start + half, start + railLength - half);
             _marker.localPosition = new Vector3(center - _cartCenterX, 0f, 0f);
             return;
         }
 
-        _marker.localPosition = new Vector3(start + along, PipeSection + 0.08f, 0f);
+        _marker.localPosition = new Vector3(start + alongPlain, PipeSection + 0.08f, 0f);
     }
 
     void AdoptPrototype(Transform root)
@@ -498,7 +514,7 @@ public class RailTwinController : MonoBehaviour
         return pieces;
     }
 
-    static void Paint(List<RailPiece> rails, float[] values, float lengthCm)
+    static void Paint(List<RailPiece> rails, float[] values, float lengthCm, bool wheelContact)
     {
         if (rails == null)
         {
@@ -510,6 +526,10 @@ public class RailTwinController : MonoBehaviour
         foreach (RailPiece piece in rails)
         {
             float cm = piece.AlongM * 100f;
+            if (wheelContact)
+            {
+                cm -= WheelStartCm;
+            }
             float v = 0f;
             if (count > 0 && segCm > 0f && cm >= 0f && cm < lengthCm)
             {

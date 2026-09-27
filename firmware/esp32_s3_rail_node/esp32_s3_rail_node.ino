@@ -15,7 +15,8 @@
    시리얼 115200, 줄 바꿈 없음.
    g 전진 평속    s 전진 감속    b 후진 평속    0 정지
    z 위치 0      c 충격 정지 해제    r 한 줄 읽기
-   BOOT 버튼: 전진 80초 후 정지. 가는 중에 다시 누르면 즉시 정지.
+   BOOT 버튼: 전진. 왼쪽 엔코더 242 cm 또는 72초 후 정지.
+   가는 중에 다시 누르면 즉시 정지. 누르기 전에 대차를 레일 왼쪽 끝에 둔다.
    ============================================================ */
 
 #include <WiFi.h>
@@ -518,13 +519,20 @@ void printLive() {
                 driveSign > 0 ? "전진" : "후진");
 }
 
+void endTimedRun(const char *why) {
+  runUntilMs = 0;
+  motionL = motionR = MOTION_STOP;
+  Serial.println(why);
+  printLive();
+}
+
 void beginTimedRun() {
   shockLatch = false;
   driveSign = 1;
   motionL = motionR = MOTION_CRUISE;
   zeroEncoders();
   runUntilMs = millis() + BUTTON_RUN_MS;
-  Serial.println("BOOT 전진 80초");
+  Serial.println("BOOT 전진. 왼쪽 242 cm 또는 72초");
 }
 
 void pollBoot() {
@@ -548,10 +556,12 @@ void pollBoot() {
     }
   }
   if (runUntilMs != 0 && (int32_t)(now - runUntilMs) >= 0) {
-    runUntilMs = 0;
-    motionL = motionR = MOTION_STOP;
-    Serial.println("80초 끝");
-    printLive();
+    endTimedRun("72초 끝");
+    return;
+  }
+  if (runUntilMs != 0 && driveSign > 0) {
+    float leftMm = POS_SIGN_L * readEnc(encL) * MM_PER_COUNT;
+    if (leftMm >= BUTTON_STOP_MM) endTimedRun("왼쪽 242 cm");
   }
 }
 
@@ -601,7 +611,7 @@ void setup() {
   snprintf(bootId, sizeof bootId, "%08lx", (unsigned long)esp_random());
   Serial.printf("\nHP028 실물 초안 %s  boot %s\n", FIRMWARE_VERSION, bootId);
   Serial.println("전진 = 빨간 기판 쪽. 판정은 서버가 한다.");
-  Serial.println("BOOT = 전진 80초. RST = 다시 켜기만, 바퀴는 안 돌림.");
+  Serial.println("BOOT = 전진, 왼쪽 242 cm 또는 72초. RST = 다시 켜기만, 바퀴는 안 돌림.");
 
   busL.begin(SDA_L, SCL_L, 100000);
   busR.begin(SDA_R, SCL_R, 100000);
