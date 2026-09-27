@@ -1,0 +1,73 @@
+root@hp028-server:~# systemctl status fastapi.service --no-pager | head -18
+● fastapi.service - RailTwin FastAPI (GitHub /var/www/HP028_RailTwin)
+     Loaded: loaded (/etc/systemd/system/fastapi.service; enabled; vendor preset: enabled)
+     Active: active (running) since Mon 2026-08-24 01:54:38 KST; 1 day 1h ago
+   Main PID: 550694 (uvicorn)
+      Tasks: 10 (limit: 9388)
+     Memory: 183.8M
+        CPU: 3min 5.516s
+     CGroup: /system.slice/fastapi.service
+             └─550694 /var/www/HP028_RailTwin/venv/bin/python3 /var/www/HP028_RailTwin/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --ssl-keyfile=/var/www/HP028_RailTwin/key.pem --ssl-certfile=/var/www/HP028_RailTwin/cert.pem
+
+Aug 25 03:28:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56256 - "GET /ws/clients HTTP/1.1" 200 OK
+Aug 25 03:28:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56257 - "GET /ws/clients HTTP/1.1" 200 OK
+Aug 25 03:29:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56291 - "GET / HTTP/1.1" 200 OK
+Aug 25 03:29:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56292 - "GET /ws/clients HTTP/1.1" 200 OK
+Aug 25 03:29:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56294 - "GET / HTTP/1.1" 200 OK
+Aug 25 03:29:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56293 - "GET /ws/clients HTTP/1.1" 200 OK
+Aug 25 03:30:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56323 - "GET / HTTP/1.1" 200 OK
+Aug 25 03:30:55 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56324 - "GET /ws/clients HTTP/1.1" 200 OK
+
+root@hp028-server:~# journalctl -u fastapi.service -n 28 --no-pager -o short-iso
+2026-08-25T03:24:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56113 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:24:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56114 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:24:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56115 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:25:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56149 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:25:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56151 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:25:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56152 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:25:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56150 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:26:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56199 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:26:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56198 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:26:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56200 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:26:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56201 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:26:56+0900 hp028-server uvicorn[550694]: INFO:     127.0.0.1:48578 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:27:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56232 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:27:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56234 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:27:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56233 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:27:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56235 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:28:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56255 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:28:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56258 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:28:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56256 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:28:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56257 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:29:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56291 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:29:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56292 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:29:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56294 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:29:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56293 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:30:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56323 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:30:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56324 - "GET /ws/clients HTTP/1.1" 200 OK
+2026-08-25T03:30:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56325 - "GET / HTTP/1.1" 200 OK
+2026-08-25T03:30:55+0900 hp028-server uvicorn[550694]: INFO:     61.42.109.14:56326 - "GET /ws/clients HTTP/1.1" 200 OK
+
+root@hp028-server:~# curl -sk https://127.0.0.1:8000/ | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps({k:d[k] for k in ['status','demo_mode','ws_clients','ai_model_loaded','mqtt']}, indent=2, ensure_ascii=False))"
+{
+  "status": "ok",
+  "demo_mode": false,
+  "ws_clients": 3,
+  "ai_model_loaded": false,
+  "mqtt": {
+    "connected": true,
+    "messages_received": 9262,
+    "messages_rejected": 0,
+    "last_message_at": 1787567411.3290782,
+    "last_error": null,
+    "host": "127.0.0.1",
+    "port": 1883,
+    "tls": false,
+    "telemetry_topic": "rail/v1/nodes/+/telemetry",
+    "status_topic": "rail/v1/nodes/+/status",
+    "auth_configured": true,
+    "ingest_queue_size": 0
+  }
+}
+
+root@hp028-server:~#

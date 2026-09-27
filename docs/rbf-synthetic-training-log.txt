@@ -1,0 +1,21 @@
+[INFO] 데이터: 합성 데이터 (파이프라인 검증용, 실측 정확도 증거가 아님)
+[INFO] 사용 디바이스: mps
+[INFO] 입력 차원=9  특징 9개
+[INFO] 특징=accel_rms, accel_peak_to_peak, crest_factor, gyro_rms, gyro_peak
+[INFO]       distance_mean_mm, distance_delta_mm, distance_std_mm, speed_mm_s
+[INFO] 샘플=1500  윈도우=32  중심=64  epoch=200
+[Epoch    1/200] train_loss=0.99193  val_loss=0.87479
+[Epoch   20/200] train_loss=0.37229  val_loss=0.25907
+[Epoch   40/200] train_loss=0.11543  val_loss=0.07804
+[Epoch   60/200] train_loss=0.06320  val_loss=0.04973
+[Epoch   80/200] train_loss=0.04159  val_loss=0.03572
+[Epoch  100/200] train_loss=0.02972  val_loss=0.02735
+[Epoch  120/200] train_loss=0.02312  val_loss=0.02356
+[Epoch  140/200] train_loss=0.01926  val_loss=0.02093
+[Epoch  160/200] train_loss=0.01666  val_loss=0.01948
+[Epoch  180/200] train_loss=0.01502  val_loss=0.01830
+[Epoch  200/200] train_loss=0.01371  val_loss=0.01704
+[OK] 모델 가중치 저장 완료 → rbf_dummy_model.pth
+
+[INFO] 합성 내부 적합 MAE=0.09023  RMSE=0.11910
+[INFO] 위 MAE/RMSE는 합성 타겟에 대한 값이며 실측 성능이 아님

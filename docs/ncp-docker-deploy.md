@@ -1,6 +1,6 @@
 # 네이버클라우드(NCP)에 RailTwin FastAPI를 Docker로 올리는 가이드
 # 현재 운영 서버 공인 IP: 223.130.128.198
-# ESP32-C3는 MQTT `:1883`, 웹 대시보드는 `https://223.130.128.198:8000/dashboard`, Godot는 `wss://223.130.128.198:8000/ws` 로 접속합니다.
+# 센서 MCU(조립 실물은 ESP32-S3-DevKitC-1 1장)의 MQTT 목표 포트는 `:1883`이다. 2026-09-24 브링업은 아직 USB 시리얼이다. 웹 대시보드는 `https://223.130.128.198:8000/dashboard`, 화면 WebSocket은 `wss://223.130.128.198:8000/ws` 이다.
 # 구 DuckDNS(hp028-railtwin.duckdns.org) 서버는 폐지했습니다.
 
 ## 한눈에 보기
@@ -11,7 +11,7 @@
 3. 서버에 Docker 설치 → 코드 받아서 `docker compose up`
 4. Godot Inspector의 WebSocket URL을 `wss://223.130.128.198:8000/ws` 로 바꾸기
 
-`DEMO_MODE=true`면 가상 센서, `false`면 원격 ESP32-C3 MQTT 입력만 사용합니다.
+`DEMO_MODE=true`면 가상 센서, `false`면 MQTT로 들어오는 센서 입력만 사용합니다. 저장소 펌웨어는 아직 ESP32-C3 두 노드용이다.
 
 > **대신 생성은 불가:** 네이버클라우드 콘솔은 본인 계정·결제·인증키가 필요해서  
 > Cursor/AI가 로그인해서 서버를 만들어 줄 수는 없습니다.  
@@ -189,7 +189,7 @@ cd ~/HP028_RailTwin
 cp .env.example .env
 # nano .env에서 MQTT_LEFT_PASSWORD, MQTT_RIGHT_PASSWORD, MQTT_BACKEND_PASSWORD를 긴 임의 문자열로 변경
 # 합성 시연: DEMO_MODE=true
-# 실제 ESP32-C3: DEMO_MODE=false, 각 보드 secrets.h의 MQTT_PASSWORD를 해당 노드 비밀번호와 일치
+# 실물 MQTT를 받을 때: DEMO_MODE=false. 저장소의 C3용 secrets.h는 조립된 S3 브링업과 핀맵이 다르다
 ```
 
 모델 파일 `rbf_dummy_model.pth` 는 git에 없을 수 있습니다.  
@@ -307,7 +307,7 @@ ESP32 MQTT: mqtt://223.130.128.198:1883
 |---|---|
 | 헬스/API | `https://223.130.128.198:8000/` |
 | 웹 대시보드 | `https://223.130.128.198:8000/dashboard` |
-| ESP32-C3 센서 업링크 | `mqtt://223.130.128.198:1883` |
+| 센서 MQTT 업링크 | `mqtt://223.130.128.198:1883` |
 | Godot / 대시보드 WS | `wss://223.130.128.198:8000/ws` |
 
 `docker-compose.https.yml`과 `scripts/run_https.sh`는 새 도메인을 발급하기 전까지 쓰지 않습니다.

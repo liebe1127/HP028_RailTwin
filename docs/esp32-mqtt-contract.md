@@ -1,4 +1,6 @@
-# ESP32-C3 MQTT 데이터 계약
+# ESP32 MQTT 데이터 계약
+
+이 문서는 저장소 `firmware/esp32_c3_rail_sensor/`가 가정한 업링크이다. 2026-09-24 조립 실물은 ESP32-S3-DevKitC-1 1장이고, 브링업은 USB 시리얼이다. 그 보드가 이 토픽으로 좌·우를 어떻게 나눌지는 아직 정하지 않았다. 장치 ID `rail-left-01` / `rail-right-01`는 이 계약의 필드이지, 실물에 C3가 두 장 있다는 뜻이 아니다.
 
 ## 연결
 
@@ -9,7 +11,7 @@
 - 전송 품질: 텔레메트리와 상태 모두 QoS 1
 - 계약 버전: `schema_version=1`
 
-좌·우 레일 구동부에는 ESP32-C3가 각각 한 대씩 있다.
+이 계약은 좌·우 스트림을 장치 두 개로 나눈다. 조립 실물의 MCU는 한 장이다.
 
 - 왼쪽: `device_id=rail-left-01`, `rail_side=left`, MQTT user `rail-left-01`
 - 오른쪽: `device_id=rail-right-01`, `rail_side=right`, MQTT user `rail-right-01`
