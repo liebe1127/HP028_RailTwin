@@ -25,4 +25,4 @@ jobs:
           script: |
             set -e
             cd /var/www/HP028_RailTwin
-            bash scripts/ncp_deploy.sh
+            INSTALL_GRAFANA=0 bash scripts/ncp_deploy.sh

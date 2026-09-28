@@ -29,9 +29,14 @@ if [[ "${INSTALL_DEPS:-0}" == "1" && -x "$APP_DIR/venv/bin/pip" ]]; then
   "$APP_DIR/venv/bin/pip" install --no-cache-dir -r "$APP_DIR/requirements.txt"
 fi
 
+# 실험 중 판정 코드만 올릴 때는 Grafana를 다시 설치하지 않는다.
+# 그 설치는 FastAPI를 잠시 멈추고 8000번 앞의 경로 나눔을 다시 만든다.
+# 지난 주행 화면을 다시 깔 때만 INSTALL_GRAFANA=1 로 실행한다.
 grafana_failed=0
-if [[ -f "$APP_DIR/scripts/install_grafana_edge.sh" ]]; then
+if [[ "${INSTALL_GRAFANA:-0}" == "1" && -f "$APP_DIR/scripts/install_grafana_edge.sh" ]]; then
   bash "$APP_DIR/scripts/install_grafana_edge.sh" || grafana_failed=1
+else
+  echo "[deploy] Grafana 재설치는 건너뜁니다. FastAPI만 재시작합니다."
 fi
 
 if systemctl list-unit-files "$SERVICE" --no-legend 2>/dev/null | grep -q "$SERVICE"; then
