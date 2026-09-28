@@ -294,9 +294,9 @@
         </div>
         <div class="flex justify-between text-[10px] text-slate-600 mt-1 mono">
           <span>0</span>
-          <span id="crane-track-end">300 cm</span>
+          <span id="crane-track-end">180 cm</span>
         </div>
-        <p id="crane-track-note" class="text-[10px] text-slate-500 mt-1">점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 242 cm를 구르면 300 cm 끝입니다.</p>
+        <p id="crane-track-note" class="text-[10px] text-slate-500 mt-1">점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 122 cm를 구르면 180 cm 끝입니다.</p>
       </div>
 
       <div class="grid grid-cols-3 gap-2 text-center">
@@ -481,7 +481,7 @@
     const STAGE_LABELS = { ok: '정상', caution: '주의', danger: '위험' };
     const MOTION_LABELS = { cruise: '평속', slow: '감속 0.1 m/s', stop: '진입 전 정지' };
     const FALLBACK_RAIL_CM = 100;
-    const LIVE_RAIL_CM = 300;
+    const LIVE_RAIL_CM = 180;
     const WHEEL_START_CM = 58;
     const UI_MIN_MS = 80;
     const SPARK_POINTS = 90;
@@ -802,7 +802,7 @@
       const trackNote = document.getElementById('crane-track-note');
       if (trackNote) {
         trackNote.textContent = live
-          ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 242 cm를 구르면 300 cm 끝입니다.'
+          ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 122 cm를 구르면 180 cm 끝입니다.'
           : '더미 주행은 시뮬레이션 레일 위치입니다.';
       }
       ['zone-joint', 'zone-vertical', 'zone-cross'].forEach((id) => {

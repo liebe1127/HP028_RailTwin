@@ -5,15 +5,15 @@ using UnityEngine;
 /// <summary>
 /// 대시보드 JS가 SendMessage("RailTwin", "ApplyState", json)로 이상 구간을 넣는다.
 /// JSON: {"x":45,"len":100,"n":20,"wheel":1,"l":[...],"r":[...]}  — x·len은 cm.
-/// 레일은 second-prototype의 각파이프(25×25 mm, 60 cm)를 5개 이어 300 cm다.
-/// wheel이 1이면 x는 구동바퀴 접점의 레일 위치다. 엔코더 0은 접점 58 cm, 242 cm를 구르면 300 cm.
+/// 레일은 second-prototype의 각파이프(25×25 mm, 60 cm)를 3개 이어 180 cm다.
+/// wheel이 1이면 x는 구동바퀴 접점의 레일 위치다. 엔코더 0은 접점 58 cm, 122 cm를 구르면 180 cm.
 /// 차체 앞면은 접점보다 2 cm 앞에 있다. len은 엔코더 좌표의 구간 길이고, 색은 58 cm를 더해 칠한다.
 /// 보이는 대차는 second-prototype 하나다. 모델 +X 를 화면의 먼 쪽 레일에 두었고,
 /// 그 레일에 left 색을 칠한다. 이 좌우 대응은 사진으로 아직 확인하지 않았다.
 /// </summary>
 public class RailTwinController : MonoBehaviour
 {
-    const int PipeCount = 5;
+    const int PipeCount = 3;
     const float PipeLength = 0.6f;
     const float PipeSection = 0.025f;
     const float JointGap = 0.015f;
@@ -573,7 +573,7 @@ public class RailTwinController : MonoBehaviour
         cam.fieldOfView = 40f;
         cam.nearClipPlane = 0.05f;
         cam.farClipPlane = 40f;
-        cam.transform.position = new Vector3(0f, 1.25f, -5.1f);
+        cam.transform.position = new Vector3(0f, 0.85f, -3.2f);
         cam.transform.LookAt(new Vector3(0f, 0.04f, 0f));
     }
 
