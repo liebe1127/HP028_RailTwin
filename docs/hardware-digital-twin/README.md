@@ -92,6 +92,7 @@ MCU는 ESP32-S3-DevKitC-1 N16R8 한 장이다. `photos/parts/13-esp32-c3-mini.jp
 | 04-lr18-above-zinc-rail.jpg | LR18-08U가 아연 각파이프를 봄. 이 틈은 약 6 mm |
 | 05-overhead-two-cells-before-motors-ran.jpg | 모터 전지가 2개뿐일 때. 이 상태로는 바퀴가 안 돈다 |
 | 06-end-view-two-white-rollers.jpg | 끝에서 본 두 프레임과 흰 롤러 |
+| 07-bogie-on-zinc-square-rails.jpg | 대차가 바닥에 놓은 아연 각파이프 두 줄 위에 올라가 있다 |
 
 부품 낱장 `photos/parts/`는 01–13 그대로다. `13-esp32-c3-mini.jpg`만 현재 MCU가 아니다.
 

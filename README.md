@@ -18,7 +18,7 @@
 ## 사용 하드웨어 및 기술 스택
 
 * **현재 하드웨어 (Edge):** ESP32-S3-DevKitC-1 N16R8 1장. 좌·우 각 LR18-08U, MPU-6050, ADS1115, L298N, JGB37-520. 상세는 [`docs/hardware-configuration-history.md`](docs/hardware-configuration-history.md).
-* **하드웨어 이력:** `firmware/esp32_c3_rail_sensor/`는 ESP32-C3 두 노드로 작성한 이전 펌웨어입니다. ESP32-S3-WROOM-1·ADXL345·HC-SR04는 취소된 초기 프로토타입입니다.
+* **하드웨어 이력:** ESP32-C3 두 노드 펌웨어와 ESP32-S3-WROOM-1·ADXL345·HC-SR04 초기 스케치는 저장소에서 뺐다. 조립 실물에 올리는 코드는 `firmware/esp32_s3_rail_node/`이다.
 * **백엔드 & 스트림:** Python, FastAPI, InfluxDB, ESP32 MQTT 업링크, 웹·Unity 다운링크 WebSocket.
 * **판정:** 구간 특징 여섯 개로 이음부 단차·수직 변형·좌우 높이차. 웨이블릿·파고율·RBF는 쓰지 않음.
 * **프론트엔드:** HTML/Vanilla JS, Tailwind CSS, Unity WebGL(레일만).
@@ -30,14 +30,14 @@
 ### Phase 1: Sensor & Edge (실물 조립 완료)
 
 * 실물 MCU는 ESP32-S3-DevKitC-1 1장이다. 좌·우 I2C 버스에 LR18-08U, MPU-6050, ADS1115를 각 1개 연결한다.
-* `firmware/esp32_s3_rail_node/`는 가속도 3축, 자이로 3축, 칩 온도, 간격, 엔코더를 읽는다. 주행 중일 때만 MQTT 배치를 보내고, BOOT는 전진 80초이다.
+* `firmware/esp32_s3_rail_node/`는 가속도 3축, 자이로 3축, 칩 온도, 간격, 엔코더를 읽는다. 주행 중일 때만 MQTT 배치를 보낸다. BOOT는 전진 25초 후 정지한다.
 * ESP32-S3-WROOM-1·ADXL345·HC-SR04 초기 스케치는 저장소에서 뺐다. 현재 보드와 다른 구성이다.
 
 ### Phase 2: Backend & Real-Time Data Stream (프로토타입 완료, 고도화 예정)
 
 * **센서 업링크:** Wi-Fi MQTT QoS 1 → NCP Mosquitto → FastAPI 구독 → 비동기 Queue. 배치는 주행 중일 때만 온다.
 * **분석 다운링크:** FastAPI → `/ws` → 웹 대시보드 / Unity WebGL.
-* **시연:** `DEMO_MODE=true`일 때 1m 레일의 20~25cm, 45~70cm, 80~90cm에 세 결함을 넣는다. 화면에는 시뮬레이션이라고 표시한다.
+* **시연:** `DEMO_MODE=true`일 때 1m 더미 레일의 20~25cm, 45~70cm, 80~90cm에 세 결함을 넣는다. 화면에는 시뮬레이션이라고 표시한다.
 
 ### Phase 3: Rule-Based Zone Detection (진행 중)
 
@@ -48,7 +48,7 @@
 ### Phase 4: Web Dashboard & Unity Rails (진행 중)
 
 * WebSocket 연동 실시간 웹 대시보드.
-* Unity WebGL에 **레일만** 띄우고, 이상 구간 색상과 갠트리 위치를 같은 좌표로 표시. 크레인 메시는 넣지 않는다.
+* Unity WebGL에 **레일만** 띄운다. 각 줄은 25×25 mm, 60 cm 아연 각파이프 3개를 이은 180 cm이다. 이상 구간 색과 갠트리 위치를 같은 좌표로 표시한다. 크레인 메시는 넣지 않는다.
 
 ## 프로토타입 실행 방법 (Getting Started)
 

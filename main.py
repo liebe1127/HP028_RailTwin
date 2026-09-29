@@ -43,6 +43,7 @@ from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 from influxdb_client import Point, WritePrecision
 
 from rail_defect import DefectRuleEngine
+from replay_csv import CFG, feed as feed_measured_csv, files_for as measured_files_for
 from run_export import (
     ExportTooLarge,
     build_download,
@@ -393,6 +394,9 @@ def build_side_ws_payload(
         "rate_mm_per_s": evaluation.get("rate_mm_per_s"),
         "relative_fast": evaluation.get("relative_fast"),
         "pass_count": evaluation.get("pass_count"),
+        "pass_result": evaluation.get("pass_result"),
+        "baseline_mode": evaluation.get("baseline_mode"),
+        "baseline_passes": evaluation.get("baseline_passes"),
         "abnormal_score": evaluation.get("score"),
         "defects": defects,
         "rail_risk": rail_risk,
@@ -409,7 +413,9 @@ def build_side_ws_payload(
     }
 
 
-def update_downlink_snapshot(source: str, side_payloads: dict[str, dict]) -> dict:
+def update_downlink_snapshot(
+    source: str, side_payloads: dict[str, dict], *, mirror: bool = True
+) -> dict:
     """독립적으로 도착한 좌·우 ESP32 결과를 최신 양측 스냅샷으로 결합한다."""
     for side, payload in side_payloads.items():
         if side in RAIL_SIDES:
@@ -424,6 +430,8 @@ def update_downlink_snapshot(source: str, side_payloads: dict[str, dict]) -> dic
             if side in latest_ws_payload_by_side
         },
     }
+    if not mirror:
+        return snapshot
     return apply_right_to_left_mirror(snapshot)
 
 
@@ -1189,6 +1197,132 @@ async def rail_risk_reset(side: Optional[str] = None):
     state = reset_rail_risk_state(side)
     logger.info("rail_risk 리셋 완료 (side=%s)", side or "all")
     return {"ok": True, "side": side or "all", "rail_risk": state}
+
+
+def _engine_evaluation() -> dict:
+    """주행 분석이 끝난 뒤 웹에 보낼 판정. 샘플 하나가 더 들어오기 전에도 쓴다."""
+    result = defect_engine.pass_result or {}
+    stage = result.get("stage", "ok")
+    motion = {"ok": "cruise", "caution": "slow", "danger": "stop"}.get(stage, "cruise")
+    return {
+        "ready": True,
+        "defect_type": result.get("defect_type", "normal"),
+        "stage": stage,
+        "motion": motion,
+        "magnitude_mm": result.get("magnitude_mm"),
+        "pass_count": result.get("passes_used", defect_engine.pass_count),
+        "pass_result": defect_engine.pass_result,
+        "baseline_mode": defect_engine.baseline_mode,
+        "baseline_passes": defect_engine.pass_analyzer.baseline_count,
+        "defects": defect_engine.defect_list(),
+        "rail_risk_left": defect_engine._risk_array("left"),
+        "rail_risk_right": defect_engine._risk_array("right"),
+    }
+
+
+async def broadcast_engine_state(source: str) -> dict:
+    """현재 엔진 결과를 좌·우 페이로드로 만들어 대시보드에 보낸다."""
+    evaluation = _engine_evaluation()
+    result = defect_engine.pass_result or {}
+    if result.get("from_mm") is not None and result.get("to_mm") is not None:
+        position_mm = (float(result["from_mm"]) + float(result["to_mm"])) / 2.0
+    else:
+        position_mm = 0.0
+    side_payloads: dict[str, dict] = {}
+    for side, risk_key in (("left", "rail_risk_left"), ("right", "rail_risk_right")):
+        sample = {
+            "position_mm": position_mm,
+            "_received_at": time.time(),
+            "device_id": f"rail-{side}-01",
+            "rail_side": side,
+        }
+        rail_risk = list(evaluation.get(risk_key) or [])
+        if len(rail_risk) == RAIL_SEGMENT_COUNT:
+            rail_risk_state[side] = rail_risk
+        side_payloads[side] = build_side_ws_payload(
+            sample,
+            side=side,
+            evaluation=evaluation,
+            rail_risk=rail_risk,
+            defects=list(evaluation.get("defects") or []),
+        )
+    snapshot = update_downlink_snapshot(
+        source, side_payloads, mirror=source != "measured"
+    )
+    if source == "measured":
+        snapshot["measured"] = True
+        snapshot["simulation"] = False
+    await ws_manager.broadcast(snapshot)
+    return snapshot
+
+
+@app.post("/api/baseline_mode")
+async def set_baseline_mode(body: dict):
+    """정상 레일 주행을 기준선으로 등록하는 모드. 3회 이상 달린 뒤 끈다."""
+    defect_engine.baseline_mode = bool(body.get("enabled", False))
+    return {
+        "baseline_mode": defect_engine.baseline_mode,
+        "baseline_passes": defect_engine.pass_analyzer.baseline_count,
+    }
+
+
+@app.post("/api/finish_pass")
+async def finish_pass():
+    """출발점으로 되돌아가지 않는 운영에서 주행 한 번이 끝났다고 알린다."""
+    result = defect_engine.finish_pass()
+    await broadcast_engine_state("measured")
+    return {"result": result}
+
+
+@app.post("/api/replay_measured")
+async def replay_measured(body: Optional[dict] = None):
+    """9월 28일 실측 CSV를 엔진에 넣고 마지막 구성을 대시보드에 보낸다."""
+    body = body or {}
+    root = Path(__file__).resolve().parent / "배준호_전달" / "레일측정데이터"
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="레일측정데이터 폴더가 없습니다")
+    which = str(body.get("which") or "cross_level")
+    targets = {
+        "joint_step": (2,),
+        "vertical": (3,),
+        "cross_level": (4,),
+        "all": (2, 3, 4),
+    }
+    if which not in targets:
+        raise HTTPException(status_code=400, detail="which 는 joint_step, vertical, cross_level, all")
+    store = defect_engine.pass_analyzer.store
+    if store is not None and store.exists():
+        store.unlink()
+    defect_engine.pass_analyzer.baseline_l = None
+    defect_engine.pass_analyzer.baseline_r = None
+    defect_engine.pass_analyzer.baseline_count = 0
+    defect_engine.pass_analyzer.history.clear()
+    defect_engine.pass_result = None
+    defect_engine.reset()
+    defect_engine.baseline_mode = True
+    for path in measured_files_for(str(root), 1):
+        feed_measured_csv(defect_engine, path)
+    baseline_count = defect_engine.pass_analyzer.baseline_count
+    defect_engine.baseline_mode = False
+    last = None
+    shown = None
+    for cfg in targets[which]:
+        defect_engine.pass_analyzer.history.clear()
+        defect_engine.pass_result = None
+        for path in measured_files_for(str(root), cfg):
+            last = feed_measured_csv(defect_engine, path)
+        shown = CFG and next(name for name, number in CFG.items() if number == cfg)
+    snapshot = await broadcast_engine_state("measured")
+    logger.info("실측 재생 완료 which=%s baseline=%s", which, baseline_count)
+    return {
+        "ok": True,
+        "which": which,
+        "folder": shown,
+        "baseline_passes": baseline_count,
+        "result": last,
+        "measured": True,
+        "snapshot_motion": snapshot.get("motion"),
+    }
 
 
 # ─────────────────────────────────────────────

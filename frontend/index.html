@@ -359,7 +359,7 @@
         </div>
         <span class="text-xs text-slate-500 mono">m · Δ · apeak · φ</span>
       </div>
-      <p class="text-xs text-slate-400 mb-4">정상 / 이음부 단차 / 수직 변형 / 좌우 높이차. 단계는 한계선 50%·한계선으로 정상·주의·위험을 나눕니다.</p>
+      <p class="text-xs text-slate-400 mb-4">정상 / 이음부 단차 / 수직 변형 / 좌우 높이차. 한계선은 ISO 12488-1 1급(이음부 단차 1.0 mm, 수직 변형 1.0 mm, 좌우 높이차 5 mm)이고, 단계는 같은 구간 3회 평균부터 정상·주의·위험을 나눕니다.</p>
 
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
@@ -394,6 +394,29 @@
       <div id="val-class" class="text-sm text-slate-200 mb-1">분류 대기…</div>
       <div id="val-motion" class="text-[11px] text-slate-400 mb-2">동작 대기…</div>
       <div id="defect-list" class="text-[11px] text-slate-400 leading-relaxed min-h-[2.5rem]">이상 구간 대기…</div>
+      <div class="mt-4 overflow-x-auto">
+        <div class="text-[10px] text-slate-500 mb-2">대처 지침. 3회 미만은 관찰 중(회색)이고 단계는 아직 내지 않습니다.</div>
+        <table class="w-full text-[10px] text-left text-slate-300 border-collapse">
+          <thead>
+            <tr class="text-slate-500">
+              <th class="py-1 pr-2 font-normal">분류</th>
+              <th class="py-1 pr-2 font-normal">단계</th>
+              <th class="py-1 pr-2 font-normal">운전 조치</th>
+              <th class="py-1 pr-2 font-normal">정비 조치</th>
+              <th class="py-1 font-normal">점검 대상</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="py-1 pr-2">정상</td><td class="pr-2">정상</td><td class="pr-2">평소 속도 유지</td><td class="pr-2">없음</td><td>–</td></tr>
+            <tr><td class="py-1 pr-2">이음부 단차</td><td class="pr-2">주의 (0.5~1.0 mm)</td><td class="pr-2">해당 구간 0.1 m/s로 감속 통과</td><td class="pr-2">다음 정기 점검 시 확인</td><td>이음판·볼트 조임, 용접부 마감, 열팽창 틈</td></tr>
+            <tr><td class="py-1 pr-2">이음부 단차</td><td class="pr-2">위험 (&gt;1.0 mm)</td><td class="pr-2">해당 구간 진입 전 정지, 정비 확인 후 운행</td><td class="pr-2">즉시 점검</td><td>이음판·볼트 풀림, 용접부 균열, 레일 끝 마모</td></tr>
+            <tr><td class="py-1 pr-2">수직 변형</td><td class="pr-2">주의 (0.5~1.0 mm)</td><td class="pr-2">해당 구간 0.1 m/s로 감속 통과</td><td class="pr-2">다음 정기 점검 시 확인</td><td>받침판 밑 그라우트, 거더 변형, 기초 침하</td></tr>
+            <tr><td class="py-1 pr-2">수직 변형</td><td class="pr-2">위험 (&gt;1.0 mm)</td><td class="pr-2">해당 구간 진입 전 정지</td><td class="pr-2">즉시 점검, 필요 시 받침 재시공</td><td>받침판 그라우트 열화, 거더 변형, 기초 침하</td></tr>
+            <tr><td class="py-1 pr-2">좌우 높이차</td><td class="pr-2">주의 (2.5~5 mm)</td><td class="pr-2">해당 구간 0.1 m/s로 감속 통과</td><td class="pr-2">다음 정기 점검 시 확인</td><td>낮은 쪽 레일의 받침판·기둥</td></tr>
+            <tr><td class="py-1 pr-2">좌우 높이차</td><td class="pr-2">위험 (&gt;5 mm)</td><td class="pr-2">해당 구간 진입 전 정지 (탈선 방향이라 가장 위험)</td><td class="pr-2">즉시 점검, 낮은 쪽 받침판 높이 조정</td><td>낮은 쪽 기둥·받침 열화, 한쪽 그라우트 박리</td></tr>
+          </tbody>
+        </table>
+      </div>
     </article>
 
   </section>
@@ -502,6 +525,7 @@
     let pendingPayload = null;
     let paintTimer = null;
     let demoMode = null;
+    let measuredReplay = false;
     // 중간 시연: left ESP32가 없을 때 right 페이로드를 left UI에도 복제
     const MIRROR_RIGHT_TO_LEFT = true;
     let leftMirroredActive = false;
@@ -684,18 +708,26 @@
         const liveNodes = Object.values(h.sensor_nodes || {}).filter(
           (node) => node && node.connected
         ).length;
-        document.getElementById('page-title').textContent = demoMode
-          ? '더미 주행 → 규칙 판정 → Unity 레일'
-          : 'ESP32 MQTT → 규칙 판정 → Unity';
-        document.getElementById('page-subtitle').textContent = demoMode
-          ? '시연용 합성 데이터입니다. 갠트리 크레인이 레일을 지날 때의 이상 구간을 표시합니다'
-          : '좌·우 ESP32 배치를 받아 레일 이상 구간을 표시합니다';
-        document.getElementById('meta-source').textContent = demoMode
-          ? '더미 스트리머'
-          : (liveNodes > 0
-            ? `MQTT ESP32 (${liveNodes})`
-            : (mqttConnected ? '브로커 연결, 센서 대기' : '센서 연결 대기'));
-        document.getElementById('meta-source').style.color = demoMode ? 'var(--stage1)' : '#a78bfa';
+        document.getElementById('page-title').textContent = measuredReplay
+          ? '실측 재생 → 주행 분석 → Unity 레일'
+          : (demoMode
+            ? '더미 주행 → 규칙 판정 → Unity 레일'
+            : 'ESP32 MQTT → 규칙 판정 → Unity');
+        document.getElementById('page-subtitle').textContent = measuredReplay
+          ? '9월 28일 실측 CSV입니다. 더미 주행이 아닙니다'
+          : (demoMode
+            ? '시연용 합성 데이터입니다. 갠트리 크레인이 레일을 지날 때의 이상 구간을 표시합니다'
+            : '좌·우 ESP32 배치를 받아 레일 이상 구간을 표시합니다');
+        document.getElementById('meta-source').textContent = measuredReplay
+          ? '실측 재생'
+          : (demoMode
+            ? '더미 스트리머'
+            : (liveNodes > 0
+              ? `MQTT ESP32 (${liveNodes})`
+              : (mqttConnected ? '브로커 연결, 센서 대기' : '센서 연결 대기')));
+        document.getElementById('meta-source').style.color = measuredReplay
+          ? '#fbbf24'
+          : (demoMode ? 'var(--stage1)' : '#a78bfa');
         document.getElementById('meta-mqtt').textContent = demoMode
           ? '시연 모드'
           : (mqttConnected ? `연결 · 수신 ${mqttCount}` : '끊김');
@@ -757,6 +789,14 @@
 
     function applyPayload(data) {
       const source = data.source || (demoMode ? 'demo' : 'mqtt');
+      const measured = source === 'measured' || data.measured === true;
+      if (measured) {
+        measuredReplay = true;
+        document.getElementById('page-title').textContent = '실측 재생 → 주행 분석 → Unity 레일';
+        document.getElementById('page-subtitle').textContent = '9월 28일 실측 CSV입니다. 더미 주행이 아닙니다';
+        document.getElementById('meta-source').textContent = '실측 재생';
+        document.getElementById('meta-source').style.color = '#fbbf24';
+      }
       let left = data.left && typeof data.left === 'object' ? data.left : null;
       let right = data.right && typeof data.right === 'object' ? data.right : null;
       // 구형 flat 페이로드: left/right 없으면 전체를 양쪽에 적용
@@ -788,7 +828,7 @@
       lastRight = right;
       const chartSide = leftHasLive || mirrored ? left : right || left;
       const encoderCm = left.distance_x ?? (right && right.distance_x);
-      const live = source !== 'demo' && !data.simulation;
+      const live = !measured && source !== 'demo' && !data.simulation;
       const seq = left.sample_seq ?? (right && right.sample_seq);
 
       updateHz();
@@ -801,9 +841,11 @@
         : (chartSide.position_mm == null ? '위치 없음' : '—');
       const trackNote = document.getElementById('crane-track-note');
       if (trackNote) {
-        trackNote.textContent = live
-          ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 122 cm를 구르면 180 cm 끝입니다.'
-          : '더미 주행은 시뮬레이션 레일 위치입니다.';
+        trackNote.textContent = measured
+          ? '9월 28일 실측 재생입니다. 점은 결함 구간 가운데입니다.'
+          : (live
+            ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 122 cm를 구르면 180 cm 끝입니다.'
+            : '더미 주행은 시뮬레이션 레일 위치입니다.');
       }
       ['zone-joint', 'zone-vertical', 'zone-cross'].forEach((id) => {
         document.getElementById(id).classList.toggle('show', source === 'demo' || data.simulation);
@@ -859,7 +901,9 @@
       const remain = featureSide.remaining_s;
       const remainText = typeof remain === 'number' && Number.isFinite(remain)
         ? ` · 한계까지 ${remain.toFixed(0)}초` : '';
-      const simText = (source === 'demo' || data.simulation) ? ' · 시뮬레이션' : '';
+      const simText = measured
+        ? ' · 실측 재생'
+        : ((source === 'demo' || data.simulation) ? ' · 시뮬레이션' : '');
       document.getElementById('val-motion').textContent = `${motionName}${remainText}${simText}`;
 
       paintRisk(riskLeftEl, left.rail_risk);
@@ -976,32 +1020,79 @@
       }
     }
 
+    function driveAction(defectType, stage, observing) {
+      if (observing) return '같은 구간을 3회 이상 지난 뒤 단계를 정합니다';
+      const table = {
+        normal: { ok: '평소 속도 유지' },
+        joint_step: {
+          caution: '해당 구간 0.1 m/s로 감속 통과',
+          danger: '해당 구간 진입 전 정지, 정비 확인 후 운행',
+        },
+        vertical: {
+          caution: '해당 구간 0.1 m/s로 감속 통과',
+          danger: '해당 구간 진입 전 정지',
+        },
+        cross_level: {
+          caution: '해당 구간 0.1 m/s로 감속 통과',
+          danger: '해당 구간 진입 전 정지 (탈선 방향이라 가장 위험)',
+        },
+      };
+      const row = table[defectType] || {};
+      return row[stage] || '';
+    }
+
     function renderDefectList(left, right, live) {
       const el = document.getElementById('defect-list');
       const items = []
         .concat((left && left.defects) || [])
         .concat((right && right.defects) || []);
+      el.replaceChildren();
       if (!items.length) {
         el.textContent = '이상 구간 없음';
         return;
       }
       const seen = new Set();
-      el.textContent = items.filter((d) => {
-        const key = `${d.defect_type}:${d.from_mm}:${d.stage}`;
+      items.filter((d) => {
+        const key = `${d.defect_type}:${d.from_mm}:${d.stage}:${d.side || ''}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
-      }).map((d) => {
+      }).forEach((d) => {
         const name = DEFECT_LABELS[d.defect_type] || d.defect_type || '이상';
-        const stage = STAGE_LABELS[d.stage] || '';
+        const passes = Number(d.pass_count);
+        const observing = d.defect_type && d.defect_type !== 'normal'
+          && Number.isFinite(passes) && passes < 3;
+        const stage = observing ? '관찰 중' : (STAGE_LABELS[d.stage] || '');
         const shift = live ? WHEEL_START_CM : 0;
-        const fromCm = Number.isFinite(Number(d.from_mm))
-          ? (Number(d.from_mm) / 10 + shift).toFixed(0) : '—';
-        const toCm = Number.isFinite(Number(d.to_mm))
-          ? (Number(d.to_mm) / 10 + shift).toFixed(0) : '—';
-        const side = d.side === 'left' ? '좌' : (d.side === 'right' ? '우' : '좌우');
-        return `${name}·${stage} ${side} ${fromCm}–${toCm}cm`;
-      }).join(' · ');
+        const passFit = d.source === 'pass_fit';
+        let place = '구간 —';
+        if (Number.isFinite(Number(d.from_mm)) && Number.isFinite(Number(d.to_mm))) {
+          place = passFit
+            ? `${Number(d.from_mm).toFixed(0)}–${Number(d.to_mm).toFixed(0)} mm`
+            : `${(Number(d.from_mm) / 10 + shift).toFixed(0)}–${(Number(d.to_mm) / 10 + shift).toFixed(0)} cm`;
+        }
+        const mag = Number(d.magnitude_mm);
+        const single = d.sizes_mm && Number(d.sizes_mm[d.defect_type]);
+        const size = Number.isFinite(mag)
+          ? `${mag.toFixed(2)} mm${Number.isFinite(single) ? ` · 이번 ${single.toFixed(2)} mm` : ''}`
+          : '크기 —';
+        const side = d.defect_type === 'cross_level'
+          ? (d.side === 'left' ? '낮은 쪽 좌' : (d.side === 'right' ? '낮은 쪽 우' : ''))
+          : '';
+        const used = Number.isFinite(passes) ? `${passes}회 평균` : '';
+        const limit = Number.isFinite(Number(d.limit_mm)) ? `한계 ${Number(d.limit_mm).toFixed(1)} mm` : '';
+        const action = driveAction(d.defect_type, d.stage, observing);
+        const color = observing ? '#94a3b8'
+          : (d.stage === 'danger' ? '#ef4444' : (d.stage === 'caution' ? '#eab308' : '#22c55e'));
+        const row = document.createElement('div');
+        row.style.borderLeft = `3px solid ${color}`;
+        row.style.paddingLeft = '8px';
+        row.style.marginBottom = '6px';
+        row.textContent = [place, name, size, stage, side, used, limit, action]
+          .filter(Boolean)
+          .join(' · ');
+        el.appendChild(row);
+      });
     }
 
     function wheelRailCm(encoderCm) {

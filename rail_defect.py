@@ -10,8 +10,11 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from dataclasses import dataclass, field
+
+from pass_analysis import PassAnalyzer, PassProfile
 
 RAIL_SIDES = ("left", "right")
 DEFECT_TYPES = ("normal", "joint_step", "vertical", "cross_level")
@@ -42,17 +45,24 @@ MIN_TREND_POINTS = 3
 SINGLE_PASS_NOISE_MM = 0.24
 MIN_PASSES_FOR_POINT1_MM = 6
 
-# 한계선은 임시값이다. 운전 공차 표 7(Cw, Ew)과 이음부 표 6은 원문 확인 전이다.
+# 한계선: 항만 갠트리(수명 주행거리 ≥ 50,000 km)는 ISO 12488-1 공차 1급으로 본다.
+# 2026-09-29 실측 24회(정상·단차·수직·좌우 각 6회)로 검증: 3회 이상 평균 판정 시
+# 정상 → 정상, 단차 1.84 mm → 위험, 수직 1.98 mm → 위험, 좌우 3.03 mm → 주의.
 LIMIT_MM = {
-    "joint_step": 0.8,  # CMAA 계열 관행. ISO 12488-1 표 6 미확인
-    "vertical": 2.0,  # ISO 12488-1:2012 표 2, 기호 c, 2급
-    "cross_level": 10.0,  # ISO 12488-1:2012 표 2, 기호 E, 2급 상한
+    "joint_step": 1.0,  # 이음부 수직 단차 ≤ 1 mm: ISO 12488-1·BS 466·FEM·CMAA 공통 지침
+    "vertical": 1.0,  # ISO 12488-1:2012 표 2, 기호 c (2 m 국부 수직 직진도), 1급
+    "cross_level": 5.0,  # ISO 12488-1:2012 표 2, 기호 E, 1급 상한 (스팬 10 m 초과)
 }
 LIMIT_SOURCE = {
-    "joint_step": "CMAA practice, ISO table 6 pending",
-    "vertical": "ISO 12488-1:2012 table 2 symbol c class 2, operating Cw pending",
-    "cross_level": "ISO 12488-1:2012 table 2 symbol E class 2 cap, operating Ew pending",
+    "joint_step": "joint vertical step <= 1 mm (ISO 12488-1 / BS 466 / FEM / CMAA guidance)",
+    "vertical": "ISO 12488-1:2012 table 2 symbol c class 1",
+    "cross_level": "ISO 12488-1:2012 table 2 symbol E class 1 cap",
 }
+# 단계(정상·주의·위험)는 같은 구간을 이 횟수 이상 지난 평균값으로만 판정한다.
+# 1회 주행은 정상 레일에서도 ±0.4 mm 흔들려 주의 경계(0.5 mm)에 걸린다(실측 6회 중 2회 오경보).
+MIN_PASSES_FOR_STAGE = 3
+# 센서 보증 구간(1.6~8 mm) 아래 값은 레일 끝 충돌·접촉이다. 실측에서 레일 끝 충돌이 단차 7~11 mm 오검출을 만들었다.
+SENSOR_MIN_VALID_MM = 2.5
 
 
 # 자이로는 각속도다. 이 시간보다 오래 샘플이 끊기면 각도를 중력 기울기로 다시 잡는다.
@@ -174,6 +184,13 @@ class DefectRuleEngine:
         self.segment_count = max(int(segment_count), 1)
         self.rail_length_mm = max(float(rail_length_cm) * 10.0, 1.0)
         self.segment_mm = self.rail_length_mm / self.segment_count
+        # 주행 단위 파형 적합 (논문 2.2절). 완만한 결함은 구간 규칙이 못 잡으므로 이 결과가 우선한다.
+        self.pass_analyzer = PassAnalyzer(
+            LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
+        )
+        self.baseline_mode = False       # True 이면 다음 주행들을 정상 기준선으로 등록
+        self.pass_profile = PassProfile()
+        self.pass_result: dict | None = None
         self.reset()
 
     def reset(self, side: str | None = None) -> None:
@@ -194,6 +211,7 @@ class DefectRuleEngine:
         self.pass_started_at = time.time()
         self.roll_deg: float | None = None
         self.roll_at: float | None = None
+        self.pass_profile = PassProfile()
 
     def evaluate_side(self, sample: dict, side: str) -> dict:
         self.pending[side] = sample
@@ -214,6 +232,7 @@ class DefectRuleEngine:
         self.pending["left"] = left
         self.pending["right"] = right
         self._note_direction(point.position_mm)
+        self.pass_profile.add(point.position_mm, point.m_mm + point.delta_mm / 2.0, point.m_mm - point.delta_mm / 2.0)
         index = self._segment_index(point.position_mm)
         if self.open_index is None:
             self.open_index = index
@@ -229,8 +248,7 @@ class DefectRuleEngine:
         right_pos = _as_float(right.get("position_mm"))
         if left_pos is None or right_pos is None:
             return False
-        if abs(left_pos - right_pos) > POSITION_MATCH_MM:
-            return False
+        # 좌·우 엔코더는 배터리 방전에 따라 최대 28%까지 벌어진다(실측). 위치 차로 짝을 버리지 않는다.
         left_at = _as_float(left.get("_received_at"))
         right_at = _as_float(right.get("_received_at"))
         if left_at is None or right_at is None:
@@ -244,12 +262,12 @@ class DefectRuleEngine:
         pos_r = _as_float(right.get("position_mm"))
         if None in (gap_l, gap_r, pos_l, pos_r):
             return None
-        if abs(pos_l - pos_r) > POSITION_MATCH_MM:
+        if min(gap_l, gap_r) < SENSOR_MIN_VALID_MM:  # 보증 구간 아래 = 레일 끝 충돌·센서 접촉, 버린다
             return None
         recorded = _as_float(left.get("_received_at")) or _as_float(right.get("_received_at"))
         tilt = self._tilt_from_gyro(left, right, recorded if recorded is not None else time.time())
         return SamplePoint(
-            position_mm=(pos_l + pos_r) / 2.0,
+            position_mm=pos_l,  # 위치 기준은 좌 엔코더 하나로 통일 (디지털 트윈과 동일)
             m_mm=(gap_l + gap_r) / 2.0,
             delta_mm=gap_l - gap_r,
             apeak=max(_dynamic_z(left), _dynamic_z(right)),
@@ -295,13 +313,37 @@ class DefectRuleEngine:
             return
         delta = position_mm - previous
         if delta <= -PASS_RESET_MM:
-            self._close_open_segment()
-            self.open_index = None
-            self.pass_count += 1
-            self.pass_started_at = time.time()
+            self.finish_pass()
             return
         if abs(delta) >= 0.5:
             self.direction = 1 if delta > 0 else -1
+
+    def finish_pass(self) -> dict | None:
+        """주행 한 번이 끝났다(위치가 200 mm 이상 되돌아감, 또는 API 호출). 프로파일을 분석한다."""
+        self._close_open_segment()
+        self.open_index = None
+        self.pass_count += 1
+        self.pass_started_at = time.time()
+        profile = self.pass_profile
+        self.pass_profile = PassProfile()
+        if len(profile) < 200:
+            return None
+        if self.baseline_mode:
+            self.pass_analyzer.register_baseline(profile)
+            self.pass_result = None
+            return {"baseline_registered": self.pass_analyzer.baseline_count}
+        result = self.pass_analyzer.analyze(profile)
+        if result is not None:
+            self.pass_result = result
+        return result
+
+    def _pass_segment_range(self) -> tuple[int, int] | None:
+        r = self.pass_result
+        if not r or r["defect_type"] == "normal" or r["from_mm"] is None:
+            return None
+        lo = self._segment_index(r["from_mm"])
+        hi = self._segment_index(r["to_mm"] - 1e-6)
+        return lo, hi
 
     def _segment_index(self, position_mm: float) -> int:
         index = int(position_mm / self.segment_mm)
@@ -339,9 +381,12 @@ class DefectRuleEngine:
             tilt_deg=features["tilt"],
             segment_mm=self.segment_mm,
         )
-        if len(record.history) + 1 >= MIN_PASSES_FOR_POINT1_MM:
+        passes = len(record.history) + 1
+        if passes >= MIN_PASSES_FOR_STAGE:
             magnitude = _mean([item[1] for item in record.history] + [magnitude])
-        stage = stage_for(defect_type, abs(magnitude))
+            stage = stage_for(defect_type, abs(magnitude))
+        else:
+            stage = "ok"  # 3회 미만: 분류만 표시하고 단계는 보류
         record.defect_type = defect_type
         record.stage = stage
         record.magnitude_mm = abs(magnitude)
@@ -426,6 +471,9 @@ class DefectRuleEngine:
             "relative_fast": current.relative_fast,
             "pass_count": self.pass_count,
             "baseline_locked": self.baseline_locked,
+            "pass_result": self.pass_result,
+            "baseline_mode": self.baseline_mode,
+            "baseline_passes": self.pass_analyzer.baseline_count,
             "motion": motion,
             "defects": defects,
             "rail_risk_left": self._risk_array("left"),
@@ -434,6 +482,26 @@ class DefectRuleEngine:
 
     def defect_list(self) -> list[dict]:
         defects: list[dict] = []
+        r = self.pass_result
+        if r and r["defect_type"] != "normal":
+            defects.append(
+                {
+                    "source": "pass_fit",
+                    "side": r["side"],
+                    "from_mm": r["from_mm"],
+                    "to_mm": r["to_mm"],
+                    "defect_type": r["defect_type"],
+                    "stage": r["stage"],
+                    "magnitude_mm": r["magnitude_mm"],
+                    "sizes_mm": r["sizes_mm"],
+                    "limit_mm": LIMIT_MM.get(r["defect_type"]),
+                    "limit_source": LIMIT_SOURCE.get(r["defect_type"]),
+                    "pass_count": r["passes_used"],
+                    "score": STAGE_SCORE[r["stage"]],
+                }
+            )
+        if r is not None:
+            return defects  # 주행 분석 결과가 있으면 그것이 우선. 구간 규칙 결과는 섞지 않는다
         for index, record in enumerate(self.segments):
             if record.defect_type == "normal":
                 continue
@@ -468,6 +536,15 @@ class DefectRuleEngine:
 
     def _risk_array(self, side: str) -> list[float]:
         values: list[float] = []
+        if self.pass_result is not None:
+            values = [0.0] * self.segment_count
+            rng = self._pass_segment_range()
+            if rng:
+                r = self.pass_result
+                if r["defect_type"] != "cross_level" or r["side"] == side:
+                    for i in range(rng[0], rng[1] + 1):
+                        values[i] = STAGE_SCORE[r["stage"]]
+            return values
         for record in self.segments:
             score = STAGE_SCORE[record.stage]
             if record.defect_type == "cross_level" and isinstance(record.delta_mm, (int, float)):
@@ -498,6 +575,9 @@ class DefectRuleEngine:
             "rail_risk_right": [0.0] * self.segment_count,
             "pass_count": self.pass_count,
             "baseline_locked": self.baseline_locked,
+            "pass_result": self.pass_result,
+            "baseline_mode": self.baseline_mode,
+            "baseline_passes": self.pass_analyzer.baseline_count,
             "remaining_s": None,
             "relative_fast": False,
         }
