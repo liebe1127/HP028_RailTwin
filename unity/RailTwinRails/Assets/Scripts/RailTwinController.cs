@@ -8,8 +8,8 @@ using UnityEngine;
 /// 레일은 second-prototype의 각파이프(25×25 mm, 60 cm)를 3개 이어 180 cm다.
 /// wheel이 1이면 x는 구동바퀴 접점의 레일 위치다. 엔코더 0은 접점 58 cm, 122 cm를 구르면 180 cm.
 /// 차체 앞면은 접점보다 2 cm 앞에 있다. len은 엔코더 좌표의 구간 길이고, 색은 58 cm를 더해 칠한다.
-/// 보이는 대차는 second-prototype 하나다. 모델 +X 를 화면의 먼 쪽 레일에 두었고,
-/// 그 레일에 left 색을 칠한다. 이 좌우 대응은 사진으로 아직 확인하지 않았다.
+/// 보이는 대차는 second-prototype 하나다. 모터(JGB37) 달린 구동륜이 화면 +X(오른쪽)를 향하게 둔다.
+/// 모델 +Z 쪽 레일에 left 색을 칠한다. 이 좌우 대응은 사진으로 아직 확인하지 않았다.
 /// </summary>
 public class RailTwinController : MonoBehaviour
 {
@@ -143,6 +143,8 @@ public class RailTwinController : MonoBehaviour
         }
 
         FlattenToUnlit(cart.gameObject);
+        // 구동 모터가 화면 오른쪽(+X, 레일 끝 방향)을 보게 Y축으로 돌린다.
+        cart.localRotation = Quaternion.Euler(0f, 180f, 0f);
         _marker = cart;
         UsePipeSpec();
         rails.localScale = Vector3.one;
