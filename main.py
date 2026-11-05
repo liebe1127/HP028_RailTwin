@@ -117,8 +117,10 @@ DEMO_CROSS_CM = (80.0, 90.0)
 G_MS2 = 9.80665
 
 # 레일 구간 이상 히트맵 (웹·Unity WebGL)
-RAIL_LENGTH_CM: float = float(os.getenv("RAIL_LENGTH_CM", str(DEMO_RAIL_LENGTH_CM)))
-RAIL_SEGMENT_COUNT: int = int(os.getenv("RAIL_SEGMENT_COUNT", "20"))
+# 실물 레일: 60 cm 아연 각파이프 3개 = 180 cm. Unity 모델과 같은 길이다.
+# 구간 36개 = 50 mm (판정 단위 기본값). 좌표는 레일 왼쪽 끝 = 0 이다.
+RAIL_LENGTH_CM: float = float(os.getenv("RAIL_LENGTH_CM", "180"))
+RAIL_SEGMENT_COUNT: int = int(os.getenv("RAIL_SEGMENT_COUNT", "36"))
 
 # 좌/우 레일 각각 구간별 위험도 (0.0=정상 ~ 1.0=높음). 주행하며 max로 누적.
 rail_risk_state: dict[str, list[float]] = {

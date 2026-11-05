@@ -1063,13 +1063,10 @@
         const observing = d.defect_type && d.defect_type !== 'normal'
           && Number.isFinite(passes) && passes < 3;
         const stage = observing ? '관찰 중' : (STAGE_LABELS[d.stage] || '');
-        const shift = live ? WHEEL_START_CM : 0;
-        const passFit = d.source === 'pass_fit';
+        // 결함 위치는 서버가 레일 좌표(레일 왼쪽 끝 = 0)로 보낸다. 구동바퀴 58 cm 보정은 대차 위치에만 쓴다.
         let place = '구간 —';
         if (Number.isFinite(Number(d.from_mm)) && Number.isFinite(Number(d.to_mm))) {
-          place = passFit
-            ? `${Number(d.from_mm).toFixed(0)}–${Number(d.to_mm).toFixed(0)} mm`
-            : `${(Number(d.from_mm) / 10 + shift).toFixed(0)}–${(Number(d.to_mm) / 10 + shift).toFixed(0)} cm`;
+          place = `${(Number(d.from_mm) / 10).toFixed(0)}–${(Number(d.to_mm) / 10).toFixed(0)} cm`;
         }
         const mag = Number(d.magnitude_mm);
         const single = d.sizes_mm && Number(d.sizes_mm[d.defect_type]);
@@ -1148,7 +1145,7 @@
         const n = risks.length;
         const serverLen = railSpanCm(left, right);
         const seg = n > 0 ? serverLen / n : serverLen;
-        const origin = live ? WHEEL_START_CM : 0;
+        const origin = 0;  // rail_risk 구간은 레일 좌표다. 대차 표시만 구동바퀴 기준으로 옮긴다
         const y = ys[si] - railH / 2;
         for (let i = 0; i < n; i++) {
           const a = origin + i * seg;

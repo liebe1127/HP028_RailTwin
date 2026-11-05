@@ -40,8 +40,9 @@ services:
       - path: .env
         required: false
     environment:
-      RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-100}
-      RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-20}
+      RAIL_LENGTH_CM: ${RAIL_LENGTH_CM:-180}
+      RAIL_SEGMENT_COUNT: ${RAIL_SEGMENT_COUNT:-36}
+      SENSOR_START_MM: ${SENSOR_START_MM:-290}
       DEVICE_ID: ${DEVICE_ID:-rail-sensor}
       DEMO_MODE: ${DEMO_MODE:-true}
       MQTT_HOST: ${MQTT_HOST:-mosquitto}

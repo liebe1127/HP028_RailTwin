@@ -82,7 +82,7 @@ def clear_baseline_file() -> None:
 
 def run(root: str) -> int:
     clear_baseline_file()
-    engine = rail_defect.DefectRuleEngine(segment_count=20, rail_length_cm=180.0)
+    engine = rail_defect.DefectRuleEngine(segment_count=36, rail_length_cm=180.0)
     engine.baseline_mode = True
     for path in files_for(root, 1):
         feed(engine, path)

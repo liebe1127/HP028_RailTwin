@@ -527,11 +527,9 @@ public class RailTwinController : MonoBehaviour
         float segCm = (count > 0 && lengthCm > 0f) ? lengthCm / count : 0f;
         foreach (RailPiece piece in rails)
         {
+            // rail_risk 구간은 서버가 레일 좌표(레일 왼쪽 끝 = 0)로 보낸다.
+            // 구동바퀴 58 cm 보정(WheelStartCm)은 대차 위치(PlaceMarker)에만 쓰고 색칠에는 쓰지 않는다.
             float cm = piece.AlongM * 100f;
-            if (wheelContact)
-            {
-                cm -= WheelStartCm;
-            }
             float v = 0f;
             if (count > 0 && segCm > 0f && cm >= 0f && cm < lengthCm)
             {

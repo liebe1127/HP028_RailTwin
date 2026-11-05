@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 
 # ── 시험 레일 기하 (실물 크레인이면 환경 변수로 바꾼다) ──
 CHORD_HALF_MM = 250.0            # 앞뒤 바퀴 간격 500 mm의 절반. 센서는 그 가운데
-SENSOR_OFFSET_MM = 250.0         # 뒷바퀴(엔코더 0점)에서 센서까지
+# 엔코더 0일 때 센서의 레일 좌표(레일 왼쪽 끝 = 0). 서버의 모든 결함 위치는 이 레일 좌표를 쓴다.
+# 2026-09-28 실측 24회의 이음부 위치로 역산한 중앙값 289 mm(범위 254~316). 실측 치수가 나오면 환경 변수로 바꾼다.
+SENSOR_START_MM = float(os.getenv("SENSOR_START_MM", "290"))
+SENSOR_OFFSET_MM = SENSOR_START_MM  # 이음부를 못 찾았을 때 엔코더 원시값에 더하는 값
 JOINTS_MM = (600.0, 1200.0)      # 이음부 위치(센서 좌표). 결함 조각은 두 이음부 사이
 RAIL_END_MM = 1800.0
 GRID_MM = np.arange(260.0, 1541.0, 5.0)

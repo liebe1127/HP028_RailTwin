@@ -14,7 +14,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from pass_analysis import PassAnalyzer, PassProfile
+from pass_analysis import SENSOR_START_MM, PassAnalyzer, PassProfile
 
 RAIL_SIDES = ("left", "right")
 DEFECT_TYPES = ("normal", "joint_step", "vertical", "cross_level")
@@ -149,7 +149,8 @@ def remaining_seconds(
 
 @dataclass
 class SamplePoint:
-    position_mm: float
+    position_mm: float  # 레일 좌표 (레일 왼쪽 끝 = 0). 구간·결함 위치는 모두 이 값
+    encoder_mm: float  # 좌 엔코더 원시값. 주행 파형 적합(PassProfile)은 이 값으로 이음부를 찾는다
     m_mm: float
     delta_mm: float
     apeak: float
@@ -179,11 +180,14 @@ class DefectRuleEngine:
         self,
         *,
         segment_count: int = 20,
-        rail_length_cm: float = 100.0,
+        rail_length_cm: float = 180.0,
+        sensor_start_mm: float = SENSOR_START_MM,
     ) -> None:
         self.segment_count = max(int(segment_count), 1)
         self.rail_length_mm = max(float(rail_length_cm) * 10.0, 1.0)
         self.segment_mm = self.rail_length_mm / self.segment_count
+        # 실측 샘플: 레일 좌표 = 좌 엔코더 + sensor_start_mm. 더미 샘플은 이미 레일 좌표다.
+        self.sensor_start_mm = float(sensor_start_mm)
         # 주행 단위 파형 적합 (논문 2.2절). 완만한 결함은 구간 규칙이 못 잡으므로 이 결과가 우선한다.
         self.pass_analyzer = PassAnalyzer(
             LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
@@ -232,7 +236,7 @@ class DefectRuleEngine:
         self.pending["left"] = left
         self.pending["right"] = right
         self._note_direction(point.position_mm)
-        self.pass_profile.add(point.position_mm, point.m_mm + point.delta_mm / 2.0, point.m_mm - point.delta_mm / 2.0)
+        self.pass_profile.add(point.encoder_mm, point.m_mm + point.delta_mm / 2.0, point.m_mm - point.delta_mm / 2.0)
         index = self._segment_index(point.position_mm)
         if self.open_index is None:
             self.open_index = index
@@ -266,8 +270,11 @@ class DefectRuleEngine:
             return None
         recorded = _as_float(left.get("_received_at")) or _as_float(right.get("_received_at"))
         tilt = self._tilt_from_gyro(left, right, recorded if recorded is not None else time.time())
+        # 위치 기준은 좌 엔코더 하나로 통일하고, 레일 좌표(레일 왼쪽 끝 = 0)로 바꿔 쓴다
+        offset = 0.0 if left.get("_source") == "demo" else self.sensor_start_mm
         return SamplePoint(
-            position_mm=pos_l,  # 위치 기준은 좌 엔코더 하나로 통일 (디지털 트윈과 동일)
+            position_mm=pos_l + offset,
+            encoder_mm=pos_l,
             m_mm=(gap_l + gap_r) / 2.0,
             delta_mm=gap_l - gap_r,
             apeak=max(_dynamic_z(left), _dynamic_z(right)),
