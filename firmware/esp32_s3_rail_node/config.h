@@ -4,7 +4,7 @@
 // 전진은 빨간 모터 기판 쪽. 2026-09-25 실물에서 f 명령으로 확인했다.
 // 전진을 바라봤을 때 코드의 왼쪽이 어느 쪽인지는 아직 확정하지 않았다.
 
-constexpr char FIRMWARE_VERSION[] = "0.6.7-draft";
+constexpr char FIRMWARE_VERSION[] = "0.6.8-draft";
 
 constexpr int SDA_L = 11;
 constexpr int SCL_L = 12;
@@ -56,6 +56,14 @@ constexpr int POS_SIGN_R = -1;
 // 이음부 단차를 넘기 위해 평속 듀티를 1.5배(180)로 올린다. 8비트 출력 255가 최대다.
 constexpr uint8_t DUTY_CRUISE = 180;
 constexpr uint8_t DUTY_SLOW = 60;
+
+// 좌·우 바퀴 동기화. 같은 듀티에서 좌 모터가 약 13% 빠르다(인수인계 517 대 455).
+// 그러면 좌가 몸통을 밀고 우 바퀴가 미끄러져 좌·우 엔코더가 벌어진다(9/28 실측 최대 29%).
+// 주행을 시작한 뒤 좌·우가 간 거리 차(mm)에 비례해 빠른 쪽 듀티를 줄이고 느린 쪽을 올린다.
+// SYNC_KP는 브링업 syncDrive()의 값이다. 단위는 듀티 / mm.
+constexpr bool SYNC_ENABLED = true;
+constexpr float SYNC_KP = 2.0f;
+constexpr int SYNC_MAX_TRIM = 60;  // 한쪽 보정 상한. 기본 듀티의 절반도 넘지 않게 한 번 더 자른다
 
 // DevKitC-1의 BOOT 버튼은 GPIO0.
 // 레일 3개, 한 개 60 cm. 출발 접점은 왼쪽 끝에서 58 cm. 목표 주행은 122 cm.

@@ -179,6 +179,38 @@ float holdGap(float &mean, float sample, bool moving) {
   return mean;
 }
 
+long readEnc(volatile long &enc);
+
+// 좌·우 동기화 기준점. syncSign이 0이면 다음 주행 시작 때 기준을 새로 잡는다.
+int syncSign = 0;
+long syncRefL = 0;
+long syncRefR = 0;
+int syncTrimNow = 0;
+
+void syncReset() {
+  syncSign = 0;
+  syncTrimNow = 0;
+}
+
+// 양수면 좌가 앞섰다: 좌 듀티를 빼고 우 듀티를 더한다.
+int syncTrim(int sign, uint8_t base) {
+  if (!SYNC_ENABLED) return 0;
+  long cL = readEnc(encL);
+  long cR = readEnc(encR);
+  if (syncSign != sign) {
+    syncSign = sign;
+    syncRefL = cL;
+    syncRefR = cR;
+    syncTrimNow = 0;
+    return 0;
+  }
+  float goneL = sign * POS_SIGN_L * (cL - syncRefL) * MM_PER_COUNT;  // 진행 방향으로 간 거리
+  float goneR = sign * POS_SIGN_R * (cR - syncRefR) * MM_PER_COUNT;
+  int limit = min(SYNC_MAX_TRIM, base / 2);
+  syncTrimNow = constrain((int)lroundf(SYNC_KP * (goneL - goneR)), -limit, limit);
+  return syncTrimNow;
+}
+
 void motorStop() {
   analogWrite(ENA_L, 0);
   digitalWrite(IN1_L, LOW);
@@ -186,16 +218,17 @@ void motorStop() {
   analogWrite(ENA_R, 0);
   digitalWrite(IN1_R, LOW);
   digitalWrite(IN2_R, LOW);
+  syncReset();
 }
 
-void motorApply(int sign, uint8_t duty) {
+void motorApply(int sign, uint8_t dutyL, uint8_t dutyR) {
   bool fwd = sign > 0;
   digitalWrite(IN1_L, fwd);
   digitalWrite(IN2_L, !fwd);
   digitalWrite(IN1_R, fwd);
   digitalWrite(IN2_R, !fwd);
-  analogWrite(ENA_L, duty);
-  analogWrite(ENA_R, duty);
+  analogWrite(ENA_L, dutyL);
+  analogWrite(ENA_R, dutyR);
 }
 
 Motion parseMotion(const String &body) {
@@ -229,7 +262,9 @@ void applyDrive() {
     motorStop();
     return;
   }
-  motorApply(driveSign, m == MOTION_CRUISE ? DUTY_CRUISE : DUTY_SLOW);
+  uint8_t base = m == MOTION_CRUISE ? DUTY_CRUISE : DUTY_SLOW;
+  int trim = syncTrim(driveSign, base);
+  motorApply(driveSign, constrain((int)base - trim, 0, 255), constrain((int)base + trim, 0, 255));
 }
 
 long readEnc(volatile long &enc) {
@@ -244,6 +279,7 @@ void zeroEncoders() {
   encL = 0;
   encR = 0;
   interrupts();
+  syncReset();  // 위치를 0으로 바꾸면 동기화 기준도 다시 잡는다
 }
 
 #if MQTT_ENABLED
@@ -509,7 +545,7 @@ void printLive() {
   (void)tcR;
   long cL = readEnc(encL);
   long cR = readEnc(encR);
-  Serial.printf("좌 위치 %.1f mm  간격 %.2f   우 위치 %.1f mm  간격 %.2f   Z %.2f / %.2f m/s2   %s %s\n",
+  Serial.printf("좌 위치 %.1f mm  간격 %.2f   우 위치 %.1f mm  간격 %.2f   Z %.2f / %.2f m/s2   %s %s  동기화 %+d\n",
                 POS_SIGN_L * cL * MM_PER_COUNT,
                 haveRawL ? gapMM(lastRawL * ADS_LSB * DIV, true) : NAN,
                 POS_SIGN_R * cR * MM_PER_COUNT,
@@ -517,7 +553,8 @@ void printLive() {
                 okL ? az : NAN,
                 okR ? bz : NAN,
                 shockLatch ? "충격정지" : motionName(effectiveMotion()),
-                driveSign > 0 ? "전진" : "후진");
+                driveSign > 0 ? "전진" : "후진",
+                syncTrimNow);
 }
 
 void endTimedRun(const char *why) {
