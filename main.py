@@ -42,6 +42,13 @@ from fastapi.staticfiles import StaticFiles
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 from influxdb_client import Point, WritePrecision
 
+# ─────────────────────────────────────────────
+#  환경 변수 로드 (.env 파일 우선, 없으면 shell 환경변수 사용)
+#  rail_defect·rail_judge_v2 등은 import 할 때 RAIL_JUDGE 같은 값을 읽으므로
+#  프로젝트 모듈보다 먼저 불러야 한다.
+# ─────────────────────────────────────────────
+load_dotenv()
+
 from rail_defect import DefectRuleEngine
 from replay_csv import CFG, feed as feed_measured_csv, files_for as measured_files_for
 from run_export import (
@@ -55,11 +62,6 @@ from run_export import (
     validate_boot_id,
 )
 from sensor_contract import RAIL_SIDES, SensorContractError, normalize_sensor_batch
-
-# ─────────────────────────────────────────────
-#  환경 변수 로드 (.env 파일 우선, 없으면 shell 환경변수 사용)
-# ─────────────────────────────────────────────
-load_dotenv()
 
 MQTT_HOST: str = os.getenv("MQTT_HOST", "127.0.0.1")
 MQTT_PORT: int = int(os.getenv("MQTT_PORT", "1883"))
