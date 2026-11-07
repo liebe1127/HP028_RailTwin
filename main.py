@@ -117,8 +117,10 @@ DEMO_CROSS_CM = (80.0, 90.0)
 G_MS2 = 9.80665
 
 # 레일 구간 이상 히트맵 (웹·Unity WebGL)
-RAIL_LENGTH_CM: float = float(os.getenv("RAIL_LENGTH_CM", str(DEMO_RAIL_LENGTH_CM)))
-RAIL_SEGMENT_COUNT: int = int(os.getenv("RAIL_SEGMENT_COUNT", "20"))
+# 실물 레일: 60 cm 아연 각파이프 3개 = 180 cm (Unity 모델과 같은 길이). 구간 36개 = 50 mm(판정 단위 기본값).
+# 더미 주행은 따로 1 m 더미 레일(DEMO_RAIL_LENGTH_CM)을 쓰고, 이 180 cm 격자의 앞부분에 그려진다.
+RAIL_LENGTH_CM: float = float(os.getenv("RAIL_LENGTH_CM", "180"))
+RAIL_SEGMENT_COUNT: int = int(os.getenv("RAIL_SEGMENT_COUNT", "36"))
 
 # 좌/우 레일 각각 구간별 위험도 (0.0=정상 ~ 1.0=높음). 주행하며 max로 누적.
 rail_risk_state: dict[str, list[float]] = {
@@ -362,10 +364,17 @@ def build_side_ws_payload(
         if isinstance(position_mm, (int, float))
         else None
     )
+    # 좌표계 통일: rail_x_mm = 센서 기준 레일 좌표(mm). 결함 구간(from_mm/to_mm)·rail_risk 와 같은 좌표계.
+    # 대시보드·Unity 는 이 값이 있으면 58 cm 보정 없이 그대로 쓴다. distance_x(엔코더 원시 cm)는 호환용으로 남긴다.
+    rail_x_mm = sample.get("rail_x_mm")
+    if rail_x_mm is None and isinstance(position_mm, (int, float)):
+        rail_x_mm = defect_engine.rail_x_mm(float(position_mm), demo=sample.get("_source") == "demo")
     return {
         "ts": sample.get("_received_at"),
         "distance_x": distance_x,
         "position_mm": position_mm,
+        "rail_x_mm": rail_x_mm,
+        "coords": "rail_sensor",
         "sensor_distance_mm": sample.get("sensor_distance_mm"),
         "adc_raw": sample.get("adc_raw"),
         "adc_voltage_v": sample.get("adc_voltage_v"),
@@ -1079,6 +1088,7 @@ async def health_check():
         },
         "sensor_nodes": sensor_node_state,
         "rule_engine": True,
+        "judge": defect_engine.judge_info(),
         "unity_webgl": (UNITY_STATIC / "Build").is_dir(),
         "demo_mode": DEMO_MODE,
         "demo_running": demo_is_running(),
@@ -1199,9 +1209,10 @@ async def rail_risk_reset(side: Optional[str] = None):
     return {"ok": True, "side": side or "all", "rail_risk": state}
 
 
-def _engine_evaluation() -> dict:
+def _engine_evaluation(engine: DefectRuleEngine | None = None) -> dict:
     """주행 분석이 끝난 뒤 웹에 보낼 판정. 샘플 하나가 더 들어오기 전에도 쓴다."""
-    result = defect_engine.pass_result or {}
+    engine = engine or defect_engine
+    result = engine.pass_result or {}
     stage = result.get("stage", "ok")
     motion = {"ok": "cruise", "caution": "slow", "danger": "stop"}.get(stage, "cruise")
     return {
@@ -1210,20 +1221,21 @@ def _engine_evaluation() -> dict:
         "stage": stage,
         "motion": motion,
         "magnitude_mm": result.get("magnitude_mm"),
-        "pass_count": result.get("passes_used", defect_engine.pass_count),
-        "pass_result": defect_engine.pass_result,
-        "baseline_mode": defect_engine.baseline_mode,
-        "baseline_passes": defect_engine.pass_analyzer.baseline_count,
-        "defects": defect_engine.defect_list(),
-        "rail_risk_left": defect_engine._risk_array("left"),
-        "rail_risk_right": defect_engine._risk_array("right"),
+        "pass_count": result.get("passes_used", engine.pass_count),
+        "pass_result": engine.pass_result,
+        "baseline_mode": engine.baseline_mode,
+        "baseline_passes": engine.pass_analyzer.baseline_count,
+        "defects": engine.defect_list(),
+        "rail_risk_left": engine._risk_array("left"),
+        "rail_risk_right": engine._risk_array("right"),
     }
 
 
-async def broadcast_engine_state(source: str) -> dict:
+async def broadcast_engine_state(source: str, engine: DefectRuleEngine | None = None) -> dict:
     """현재 엔진 결과를 좌·우 페이로드로 만들어 대시보드에 보낸다."""
-    evaluation = _engine_evaluation()
-    result = defect_engine.pass_result or {}
+    engine = engine or defect_engine
+    evaluation = _engine_evaluation(engine)
+    result = engine.pass_result or {}
     if result.get("from_mm") is not None and result.get("to_mm") is not None:
         position_mm = (float(result["from_mm"]) + float(result["to_mm"])) / 2.0
     else:
@@ -1232,6 +1244,7 @@ async def broadcast_engine_state(source: str) -> dict:
     for side, risk_key in (("left", "rail_risk_left"), ("right", "rail_risk_right")):
         sample = {
             "position_mm": position_mm,
+            "rail_x_mm": position_mm,   # 결함 구간 가운데: 이미 레일 좌표
             "_received_at": time.time(),
             "device_id": f"rail-{side}-01",
             "rail_side": side,
@@ -1247,13 +1260,87 @@ async def broadcast_engine_state(source: str) -> dict:
             defects=list(evaluation.get("defects") or []),
         )
     snapshot = update_downlink_snapshot(
-        source, side_payloads, mirror=source != "measured"
+        source, side_payloads, mirror=source not in ("measured", "virtual")
     )
     if source == "measured":
         snapshot["measured"] = True
         snapshot["simulation"] = False
+    if source == "virtual":                      # 가상 주행 재생: 실측과 같은 화면 경로, 표시만 다르게
+        snapshot["measured"] = True
+        snapshot["virtual"] = True
+        snapshot["simulation"] = False
     await ws_manager.broadcast(snapshot)
     return snapshot
+
+
+def new_replay_engine() -> DefectRuleEngine:
+    """재생(실측·가상) 전용 엔진. 운영 엔진과 기준선 파일(RAIL_BASELINE_FILE)을 건드리지 않는다."""
+    return DefectRuleEngine(
+        segment_count=RAIL_SEGMENT_COUNT,
+        rail_length_cm=RAIL_LENGTH_CM,
+        baseline_file=None,
+    )
+
+
+@app.post("/api/replay_virtual")
+async def replay_virtual(body: Optional[dict] = None):
+    """가상 모형으로 만든 주행 CSV(가상주행/)를 엔진에 넣고 결과를 대시보드와 Unity 에 보낸다.
+
+    body.group: "HF" | "C" | "HF+C" | "all"  (manifest.csv 의 group 열)
+    body.placement_id: 그 그룹 안의 배치 번호. 없으면 그룹의 첫 배치. 같은 배치 3회를 이어서 넣어 3회째 판정을 본다.
+    기준선은 group=baseline 인 정상 주행 6회로 매번 새로 등록한다. 재생 전용 엔진을 써서 운영 기준선 파일은 건드리지 않는다.
+    """
+    import csv as _csv
+    body = body or {}
+    root = Path(__file__).resolve().parent / "가상주행"
+    manifest = root / "manifest.csv"
+    if not manifest.is_file():
+        raise HTTPException(status_code=404, detail="가상주행/manifest.csv 가 없습니다")
+    with open(manifest, newline="", encoding="utf-8-sig") as handle:
+        rows = list(_csv.DictReader(handle))
+    group = str(body.get("group") or "HF+C")
+    groups = ["HF", "C", "HF+C"] if group == "all" else [group]
+    if any(g not in {"HF", "C", "HF+C"} for g in groups):
+        raise HTTPException(status_code=400, detail="group 은 HF, C, HF+C, all")
+    engine = new_replay_engine()   # 운영 기준선을 지우지 않는다
+    engine.baseline_mode = True
+    for row in rows:
+        if row["group"] == "baseline":
+            feed_measured_csv(engine, str(root / "runs" / row["file"]))
+    baseline_count = engine.pass_analyzer.baseline_count
+    engine.baseline_mode = False
+    last = None
+    played: list[dict] = []
+    for g in groups:
+        candidates = [r for r in rows if r["group"] == g]
+        want = body.get("placement_id")
+        pid = str(want) if want is not None else candidates[0]["placement_id"]
+        runs = [r for r in candidates if r["placement_id"] == pid]
+        if not runs:
+            raise HTTPException(status_code=400, detail=f"group {g} 에 배치 {pid} 가 없습니다")
+        engine.pass_analyzer.history.clear()
+        engine.pass_result = None
+        for r in sorted(runs, key=lambda x: int(x["rep"])):
+            last = feed_measured_csv(engine, str(root / "runs" / r["file"]))
+            played.append({"group": g, "placement_id": pid, "rep": int(r["rep"]), "file": r["file"],
+                           "true_size_HF_mm": float(r["size_HF_mm"]), "true_size_C_mm": float(r["size_C_mm"]),
+                           "true_stage": r["stage"], "result": last})
+    await broadcast_engine_state("virtual", engine)
+    logger.info("가상 주행 재생 완료 group=%s baseline=%s", group, baseline_count)
+    return {"ok": True, "group": group, "baseline_passes": baseline_count, "played": played, "result": last}
+
+
+@app.post("/api/motion_from_pass")
+async def set_motion_from_pass(body: dict):
+    """주행 분석 결과로 감속·정지(앞 구간 미리 보기)를 켜고 끈다. 서버 재시작 없이 바꾸므로 3회 평균 기록이 유지된다.
+
+    실험에서 데이터를 모을 때는 끄고(대차가 결함 앞에서 멈추지 않고 끝까지 달림), 정지 동작을 확인할 때 켠다.
+    재시작하면 RAIL_MOTION_FROM_PASS(비우면 v2 일 때 켬)로 돌아간다.
+    """
+    if "enabled" in body:
+        defect_engine.motion_from_pass = bool(body["enabled"])
+    logger.info("주행 분석 감속·정지: %s", defect_engine.motion_from_pass)
+    return {"motion_from_pass": defect_engine.motion_from_pass}
 
 
 @app.post("/api/baseline_mode")
@@ -1290,29 +1377,21 @@ async def replay_measured(body: Optional[dict] = None):
     }
     if which not in targets:
         raise HTTPException(status_code=400, detail="which 는 joint_step, vertical, cross_level, all")
-    store = defect_engine.pass_analyzer.store
-    if store is not None and store.exists():
-        store.unlink()
-    defect_engine.pass_analyzer.baseline_l = None
-    defect_engine.pass_analyzer.baseline_r = None
-    defect_engine.pass_analyzer.baseline_count = 0
-    defect_engine.pass_analyzer.history.clear()
-    defect_engine.pass_result = None
-    defect_engine.reset()
-    defect_engine.baseline_mode = True
+    engine = new_replay_engine()   # 운영 기준선을 지우지 않는다
+    engine.baseline_mode = True
     for path in measured_files_for(str(root), 1):
-        feed_measured_csv(defect_engine, path)
-    baseline_count = defect_engine.pass_analyzer.baseline_count
-    defect_engine.baseline_mode = False
+        feed_measured_csv(engine, path)
+    baseline_count = engine.pass_analyzer.baseline_count
+    engine.baseline_mode = False
     last = None
     shown = None
     for cfg in targets[which]:
-        defect_engine.pass_analyzer.history.clear()
-        defect_engine.pass_result = None
+        engine.pass_analyzer.history.clear()
+        engine.pass_result = None
         for path in measured_files_for(str(root), cfg):
-            last = feed_measured_csv(defect_engine, path)
+            last = feed_measured_csv(engine, path)
         shown = CFG and next(name for name, number in CFG.items() if number == cfg)
-    snapshot = await broadcast_engine_state("measured")
+    snapshot = await broadcast_engine_state("measured", engine)
     logger.info("실측 재생 완료 which=%s baseline=%s", which, baseline_count)
     return {
         "ok": True,

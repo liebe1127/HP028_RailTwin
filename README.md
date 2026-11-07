@@ -60,6 +60,8 @@
 
 ## 개발보고서 및 AI 인계
 
+* **판정 엔진 v2·AI 크기 추정 (기본 꺼짐):** [`docs/ai-judge.md`](docs/ai-judge.md), 좌표계 [`docs/coords-rail-sensor.md`](docs/coords-rail-sensor.md)
+* **빌드·배포 대기 목록:** [`docs/빌드_대기_목록.md`](docs/빌드_대기_목록.md)
 * **ESP32 MQTT 계약:** [`docs/esp32-mqtt-contract.md`](docs/esp32-mqtt-contract.md)
 * **공식 PDF 양식 항목표:** [`docs/development-report-template-map.md`](docs/development-report-template-map.md)
 * **프로젝트 통합 문맥:** [`docs/notion-project-context.md`](docs/notion-project-context.md)
