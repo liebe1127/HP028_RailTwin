@@ -200,6 +200,8 @@ class DefectRuleEngine:
         self.segment_count = max(int(segment_count), 1)
         self.rail_length_mm = max(float(rail_length_cm) * 10.0, 1.0)
         self.segment_mm = self.rail_length_mm / self.segment_count
+        # 주행 분석 결과로 감속·정지(앞 구간 미리 보기). 서버를 끄지 않고 /api/motion_from_pass 로 바꿀 수 있다
+        self.motion_from_pass = MOTION_FROM_PASS
         # 주행 단위 파형 적합 (논문 2.2절). 완만한 결함은 구간 규칙이 못 잡으므로 이 결과가 우선한다.
         if JUDGE_VERSION == "v2":
             # 가상 시운전으로 찾은 네 문제를 고친 수정안(rail_judge_v2.py). 기본은 논문 검증본(v1).
@@ -255,7 +257,7 @@ class DefectRuleEngine:
             "version": JUDGE_VERSION,
             "ai": ai is not None,
             "ai_models": getattr(ai, "n_models", 0) if ai is not None else 0,
-            "motion_from_pass": MOTION_FROM_PASS,
+            "motion_from_pass": self.motion_from_pass,
             "rail_length_cm": self.rail_length_mm / 10.0,
             "segment_count": self.segment_count,
         }
@@ -507,7 +509,7 @@ class DefectRuleEngine:
             else "ok"
         )
         motion = _motion(current.stage, ahead_stage)
-        if MOTION_FROM_PASS and self.pass_result is not None:
+        if self.motion_from_pass and self.pass_result is not None:
             # 판정과 신호를 같은 근거(주행 분석 결과)로. 진행 방향 앞 구간까지 보고 결함 전에 감속·정지한다.
             motion = self._motion_from_pass(index)
         defects = self.defect_list()

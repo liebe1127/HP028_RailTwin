@@ -1330,6 +1330,19 @@ async def replay_virtual(body: Optional[dict] = None):
     return {"ok": True, "group": group, "baseline_passes": baseline_count, "played": played, "result": last}
 
 
+@app.post("/api/motion_from_pass")
+async def set_motion_from_pass(body: dict):
+    """주행 분석 결과로 감속·정지(앞 구간 미리 보기)를 켜고 끈다. 서버 재시작 없이 바꾸므로 3회 평균 기록이 유지된다.
+
+    실험에서 데이터를 모을 때는 끄고(대차가 결함 앞에서 멈추지 않고 끝까지 달림), 정지 동작을 확인할 때 켠다.
+    재시작하면 RAIL_MOTION_FROM_PASS(비우면 v2 일 때 켬)로 돌아간다.
+    """
+    if "enabled" in body:
+        defect_engine.motion_from_pass = bool(body["enabled"])
+    logger.info("주행 분석 감속·정지: %s", defect_engine.motion_from_pass)
+    return {"motion_from_pass": defect_engine.motion_from_pass}
+
+
 @app.post("/api/baseline_mode")
 async def set_baseline_mode(body: dict):
     """정상 레일 주행을 기준선으로 등록하는 모드. 3회 이상 달린 뒤 끈다."""
