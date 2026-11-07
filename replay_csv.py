@@ -38,8 +38,9 @@ def _num(value: str | None) -> float | None:
 def load_rows(path: str) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
-    if "12차" in unicodedata.normalize("NFC", os.path.basename(path)):
-        # 출발 직후 멈췄다 재출발한 파일: 재출발부터
+    name = unicodedata.normalize("NFC", os.path.basename(path))
+    if "9월 28일 12차" in name or name.startswith("12_"):
+        # 9/28 12차 한 파일만: 출발 직후 멈췄다 재출발해서 재출발부터 쓴다 (다른 날의 12차에는 적용하지 않는다)
         start = datetime.fromisoformat(rows[0]["time"])
         kept = []
         for row in rows:
