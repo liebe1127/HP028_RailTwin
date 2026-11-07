@@ -362,10 +362,17 @@ def build_side_ws_payload(
         if isinstance(position_mm, (int, float))
         else None
     )
+    # 좌표계 통일: rail_x_mm = 센서 기준 레일 좌표(mm). 결함 구간(from_mm/to_mm)·rail_risk 와 같은 좌표계.
+    # 대시보드·Unity 는 이 값이 있으면 58 cm 보정 없이 그대로 쓴다. distance_x(엔코더 원시 cm)는 호환용으로 남긴다.
+    rail_x_mm = sample.get("rail_x_mm")
+    if rail_x_mm is None and isinstance(position_mm, (int, float)):
+        rail_x_mm = defect_engine.rail_x_mm(float(position_mm))
     return {
         "ts": sample.get("_received_at"),
         "distance_x": distance_x,
         "position_mm": position_mm,
+        "rail_x_mm": rail_x_mm,
+        "coords": "rail_sensor",
         "sensor_distance_mm": sample.get("sensor_distance_mm"),
         "adc_raw": sample.get("adc_raw"),
         "adc_voltage_v": sample.get("adc_voltage_v"),
@@ -1232,6 +1239,7 @@ async def broadcast_engine_state(source: str) -> dict:
     for side, risk_key in (("left", "rail_risk_left"), ("right", "rail_risk_right")):
         sample = {
             "position_mm": position_mm,
+            "rail_x_mm": position_mm,   # 결함 구간 가운데: 이미 레일 좌표
             "_received_at": time.time(),
             "device_id": f"rail-{side}-01",
             "rail_side": side,
@@ -1247,13 +1255,75 @@ async def broadcast_engine_state(source: str) -> dict:
             defects=list(evaluation.get("defects") or []),
         )
     snapshot = update_downlink_snapshot(
-        source, side_payloads, mirror=source != "measured"
+        source, side_payloads, mirror=source not in ("measured", "virtual")
     )
     if source == "measured":
         snapshot["measured"] = True
         snapshot["simulation"] = False
+    if source == "virtual":                      # 가상 주행 재생: 실측과 같은 화면 경로, 표시만 다르게
+        snapshot["measured"] = True
+        snapshot["virtual"] = True
+        snapshot["simulation"] = False
     await ws_manager.broadcast(snapshot)
     return snapshot
+
+
+@app.post("/api/replay_virtual")
+async def replay_virtual(body: Optional[dict] = None):
+    """가상 모형으로 만든 주행 CSV(가상주행/)를 엔진에 넣고 결과를 대시보드와 Unity 에 보낸다.
+
+    body.group: "HF" | "C" | "HF+C" | "all"  (manifest.csv 의 group 열)
+    body.placement_id: 그 그룹 안의 배치 번호. 없으면 그룹의 첫 배치. 같은 배치 3회를 이어서 넣어 3회째 판정을 본다.
+    기준선은 group=baseline 인 정상 주행 6회로 매번 새로 등록한다.
+    """
+    import csv as _csv
+    body = body or {}
+    root = Path(__file__).resolve().parent / "가상주행"
+    manifest = root / "manifest.csv"
+    if not manifest.is_file():
+        raise HTTPException(status_code=404, detail="가상주행/manifest.csv 가 없습니다")
+    with open(manifest, newline="", encoding="utf-8-sig") as handle:
+        rows = list(_csv.DictReader(handle))
+    group = str(body.get("group") or "HF+C")
+    groups = ["HF", "C", "HF+C"] if group == "all" else [group]
+    if any(g not in {"HF", "C", "HF+C"} for g in groups):
+        raise HTTPException(status_code=400, detail="group 은 HF, C, HF+C, all")
+    store = defect_engine.pass_analyzer.store
+    if store is not None and store.exists():
+        store.unlink()
+    defect_engine.pass_analyzer.baseline_l = None
+    defect_engine.pass_analyzer.baseline_r = None
+    defect_engine.pass_analyzer.baseline_count = 0
+    if hasattr(defect_engine.pass_analyzer, "_baseline_runs"):
+        defect_engine.pass_analyzer._baseline_runs.clear()
+    defect_engine.pass_analyzer.history.clear()
+    defect_engine.pass_result = None
+    defect_engine.reset()
+    defect_engine.baseline_mode = True
+    for row in rows:
+        if row["group"] == "baseline":
+            feed_measured_csv(defect_engine, str(root / "runs" / row["file"]))
+    baseline_count = defect_engine.pass_analyzer.baseline_count
+    defect_engine.baseline_mode = False
+    last = None
+    played: list[dict] = []
+    for g in groups:
+        candidates = [r for r in rows if r["group"] == g]
+        want = body.get("placement_id")
+        pid = str(want) if want is not None else candidates[0]["placement_id"]
+        runs = [r for r in candidates if r["placement_id"] == pid]
+        if not runs:
+            raise HTTPException(status_code=400, detail=f"group {g} 에 배치 {pid} 가 없습니다")
+        defect_engine.pass_analyzer.history.clear()
+        defect_engine.pass_result = None
+        for r in sorted(runs, key=lambda x: int(x["rep"])):
+            last = feed_measured_csv(defect_engine, str(root / "runs" / r["file"]))
+            played.append({"group": g, "placement_id": pid, "rep": int(r["rep"]), "file": r["file"],
+                           "true_size_HF_mm": float(r["size_HF_mm"]), "true_size_C_mm": float(r["size_C_mm"]),
+                           "true_stage": r["stage"], "result": last})
+    await broadcast_engine_state("virtual")
+    logger.info("가상 주행 재생 완료 group=%s baseline=%s", group, baseline_count)
+    return {"ok": True, "group": group, "baseline_passes": baseline_count, "played": played, "result": last}
 
 
 @app.post("/api/baseline_mode")

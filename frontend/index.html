@@ -500,12 +500,15 @@
       joint_step: '이음부 단차',
       vertical: '수직 변형',
       cross_level: '좌우 높이차',
+      sensor_check: '센서 점검',
     };
     const STAGE_LABELS = { ok: '정상', caution: '주의', danger: '위험' };
     const MOTION_LABELS = { cruise: '평속', slow: '감속 0.1 m/s', stop: '진입 전 정지' };
     const FALLBACK_RAIL_CM = 100;
     const LIVE_RAIL_CM = 180;
     const WHEEL_START_CM = 58;
+    // 서버가 rail_x_mm(센서 기준 레일 좌표)를 보내면 true. 이때는 58 cm 보정을 하지 않는다(결함 구간·위험도와 같은 좌표계).
+    let railCoordsActive = false;
     const UI_MIN_MS = 80;
     const SPARK_POINTS = 90;
     const FLAG_BITS = [
@@ -790,11 +793,16 @@
     function applyPayload(data) {
       const source = data.source || (demoMode ? 'demo' : 'mqtt');
       const measured = source === 'measured' || data.measured === true;
+      const virtualReplay = source === 'virtual' || data.virtual === true;
       if (measured) {
         measuredReplay = true;
-        document.getElementById('page-title').textContent = '실측 재생 → 주행 분석 → Unity 레일';
-        document.getElementById('page-subtitle').textContent = '9월 28일 실측 CSV입니다. 더미 주행이 아닙니다';
-        document.getElementById('meta-source').textContent = '실측 재생';
+        document.getElementById('page-title').textContent = virtualReplay
+          ? '가상 주행 재생 → 주행 분석 → Unity 레일'
+          : '실측 재생 → 주행 분석 → Unity 레일';
+        document.getElementById('page-subtitle').textContent = virtualReplay
+          ? '가상 모형으로 만든 주행 CSV입니다. 실측이 아닙니다'
+          : '9월 28일 실측 CSV입니다. 더미 주행이 아닙니다';
+        document.getElementById('meta-source').textContent = virtualReplay ? '가상 주행 재생' : '실측 재생';
         document.getElementById('meta-source').style.color = '#fbbf24';
       }
       let left = data.left && typeof data.left === 'object' ? data.left : null;
@@ -834,18 +842,25 @@
       updateHz();
 
       const xn = Number(encoderCm);
-      const hasPosition = Number.isFinite(xn);
-      const railCm = hasPosition ? (live ? wheelRailCm(xn) : xn) : null;
+      const railMm = left.rail_x_mm ?? (right && right.rail_x_mm);
+      railCoordsActive = Number.isFinite(Number(railMm));
+      const hasPosition = railCoordsActive || Number.isFinite(xn);
+      // 서버 좌표계(센서 기준 레일 mm)가 있으면 그대로, 없으면 옛 방식(엔코더 + 58 cm)
+      const railCm = railCoordsActive
+        ? Number(railMm) / 10
+        : (hasPosition ? (live ? wheelRailCm(xn) : xn) : null);
       document.getElementById('val-x').textContent = hasPosition
         ? `${railCm.toFixed(0)} cm`
         : (chartSide.position_mm == null ? '위치 없음' : '—');
       const trackNote = document.getElementById('crane-track-note');
       if (trackNote) {
         trackNote.textContent = measured
-          ? '9월 28일 실측 재생입니다. 점은 결함 구간 가운데입니다.'
-          : (live
-            ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 122 cm를 구르면 180 cm 끝입니다.'
-            : '더미 주행은 시뮬레이션 레일 위치입니다.');
+          ? (virtualReplay ? '가상 주행 재생입니다. 점은 결함 구간 가운데입니다.' : '9월 28일 실측 재생입니다. 점은 결함 구간 가운데입니다.')
+          : (railCoordsActive
+            ? '점은 센서 위치입니다(레일 좌표, 이음부 60·120 cm 기준으로 보정).'
+            : (live
+              ? '점은 구동바퀴 접점입니다. 엔코더 0은 58 cm이고, 122 cm를 구르면 180 cm 끝입니다.'
+              : '더미 주행은 시뮬레이션 레일 위치입니다.'));
       }
       ['zone-joint', 'zone-vertical', 'zone-cross'].forEach((id) => {
         document.getElementById(id).classList.toggle('show', source === 'demo' || data.simulation);
@@ -902,7 +917,7 @@
       const remainText = typeof remain === 'number' && Number.isFinite(remain)
         ? ` · 한계까지 ${remain.toFixed(0)}초` : '';
       const simText = measured
-        ? ' · 실측 재생'
+        ? (virtualReplay ? ' · 가상 주행 재생' : ' · 실측 재생')
         : ((source === 'demo' || data.simulation) ? ' · 시뮬레이션' : '');
       document.getElementById('val-motion').textContent = `${motionName}${remainText}${simText}`;
 
@@ -911,7 +926,7 @@
       const markerCm = hasPosition ? railCm : null;
       const drawSpan = live ? LIVE_RAIL_CM : railSpanCm(left, right);
       drawRailFallback(left, right, markerCm, drawSpan, live);
-      pushUnityState(left, right, live ? markerCm : encoderCm, live);
+      pushUnityState(left, right, railCoordsActive ? markerCm : (live ? markerCm : encoderCm), live && !railCoordsActive);
       renderDefectList(left, right, live);
 
       const mag = accelMag(chartSide);
@@ -1036,6 +1051,7 @@
           caution: '해당 구간 0.1 m/s로 감속 통과',
           danger: '해당 구간 진입 전 정지 (탈선 방향이라 가장 위험)',
         },
+        sensor_check: { ok: '센서 고정·배선 점검 후 다시 측정 (레일 결함 아님)' },
       };
       const row = table[defectType] || {};
       return row[stage] || '';
@@ -1063,7 +1079,7 @@
         const observing = d.defect_type && d.defect_type !== 'normal'
           && Number.isFinite(passes) && passes < 3;
         const stage = observing ? '관찰 중' : (STAGE_LABELS[d.stage] || '');
-        const shift = live ? WHEEL_START_CM : 0;
+        const shift = (live && !railCoordsActive) ? WHEEL_START_CM : 0;
         const passFit = d.source === 'pass_fit';
         let place = '구간 —';
         if (Number.isFinite(Number(d.from_mm)) && Number.isFinite(Number(d.to_mm))) {
@@ -1148,7 +1164,7 @@
         const n = risks.length;
         const serverLen = railSpanCm(left, right);
         const seg = n > 0 ? serverLen / n : serverLen;
-        const origin = live ? WHEEL_START_CM : 0;
+        const origin = (live && !railCoordsActive) ? WHEEL_START_CM : 0;
         const y = ys[si] - railH / 2;
         for (let i = 0; i < n; i++) {
           const a = origin + i * seg;
@@ -1324,12 +1340,12 @@
 
     function showCartAtStart() {
       const live = !demoMode;
-      const cm = live ? WHEEL_START_CM : 0;
+      const cm = (live && !railCoordsActive) ? WHEEL_START_CM : 0;
       const span = live ? LIVE_RAIL_CM : railSpanCm(lastLeft, lastRight);
       document.getElementById('val-x').textContent = `${cm.toFixed(0)} cm`;
       document.getElementById('crane-dot').style.left = `${(cm / span) * 100}%`;
       drawRailFallback(lastLeft, lastRight, cm, span, live);
-      pushUnityState(lastLeft, lastRight, cm, live);
+      pushUnityState(lastLeft, lastRight, cm, live && !railCoordsActive);
     }
 
     async function resetPosition() {

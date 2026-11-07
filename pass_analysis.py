@@ -239,4 +239,5 @@ class PassAnalyzer:
             "to_mm": JOINTS_MM[1] if defect != "normal" else None,
             "passes_used": passes,
             "encoder_scale": meta.get("encoder_scale"),
+            "joint_raw_mm": meta.get("joint_raw_mm"),   # 이음부 틈의 엔코더 원시 위치. 다음 주행의 원시값→레일 좌표 변환에 쓴다
         }

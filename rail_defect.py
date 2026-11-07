@@ -14,7 +14,14 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from pass_analysis import PassAnalyzer, PassProfile
+from pass_analysis import PassAnalyzer, PassProfile, JOINTS_MM, SENSOR_OFFSET_MM
+
+# 좌표계 통일(2026-11-03): 결함 구간·위험도 배열·감속 신호는 모두 "센서 기준 레일 mm" 로 낸다.
+# 엔코더 원시값(출발점 0, 뒷바퀴 기준)은 직전 주행 분석이 찾은 이음부 위치·배율로 레일 좌표로 바꾼다.
+# 아직 주행 분석 결과가 없을 때만 아래 값(출발 시 뒷바퀴의 레일 위치, mm)을 쓴다. 운용 환경에 맞게 환경 변수로 준다.
+ENCODER_ZERO_RAIL_MM = float(os.getenv("RAIL_ENCODER_ZERO_MM", "0"))
+# 감속·정지는 주행 분석 결과(rail_risk)에서, 진행 방향으로 이 구간 수만큼 앞을 미리 본다.
+MOTION_LOOKAHEAD_SEGMENTS = int(os.getenv("RAIL_MOTION_LOOKAHEAD", "2"))
 
 RAIL_SIDES = ("left", "right")
 DEFECT_TYPES = ("normal", "joint_step", "vertical", "cross_level")
@@ -25,6 +32,7 @@ DEFECT_LABELS = {
     "joint_step": "이음부 단차",
     "vertical": "수직 변형",
     "cross_level": "좌우 높이차",
+    "sensor_check": "센서 점검",      # rail_judge_v2 + RAIL_AI=1: 한쪽 센서 어긋남 (레일 결함 아님)
 }
 
 G_MS2 = 9.80665
@@ -185,9 +193,16 @@ class DefectRuleEngine:
         self.rail_length_mm = max(float(rail_length_cm) * 10.0, 1.0)
         self.segment_mm = self.rail_length_mm / self.segment_count
         # 주행 단위 파형 적합 (논문 2.2절). 완만한 결함은 구간 규칙이 못 잡으므로 이 결과가 우선한다.
-        self.pass_analyzer = PassAnalyzer(
-            LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
-        )
+        if os.getenv("RAIL_JUDGE", "v1").lower() == "v2":
+            # 가상 시운전으로 찾은 네 문제를 고친 수정안(rail_judge_v2.py). 기본은 논문 검증본(v1).
+            from rail_judge_v2 import PassAnalyzerV2
+            self.pass_analyzer = PassAnalyzerV2(
+                LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
+            )
+        else:
+            self.pass_analyzer = PassAnalyzer(
+                LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
+            )
         self.baseline_mode = False       # True 이면 다음 주행들을 정상 기준선으로 등록
         self.pass_profile = PassProfile()
         self.pass_result: dict | None = None
@@ -225,6 +240,17 @@ class DefectRuleEngine:
         right = mate if side == "left" else sample
         return self.evaluate_pair(left, right)
 
+    def rail_x_mm(self, raw_position_mm: float) -> float:
+        """엔코더 원시값(뒷바퀴, 출발점 0) → 센서 기준 레일 좌표(mm).
+
+        직전 주행 분석이 이음부 틈 두 개를 찾았으면 그 위치·배율로 바꾼다(미끄러짐 보정 포함).
+        없으면 출발 위치 가정(ENCODER_ZERO_RAIL_MM) + 센서 오프셋으로 근사한다.
+        """
+        r = self.pass_result
+        if r and r.get("encoder_scale") and r.get("joint_raw_mm"):
+            return float(JOINTS_MM[0] + (float(raw_position_mm) - float(r["joint_raw_mm"][0])) * float(r["encoder_scale"]))
+        return float(raw_position_mm) + ENCODER_ZERO_RAIL_MM + SENSOR_OFFSET_MM
+
     def evaluate_pair(self, left: dict, right: dict) -> dict:
         point = self._point_from_pair(left, right)
         if point is None:
@@ -233,7 +259,7 @@ class DefectRuleEngine:
         self.pending["right"] = right
         self._note_direction(point.position_mm)
         self.pass_profile.add(point.position_mm, point.m_mm + point.delta_mm / 2.0, point.m_mm - point.delta_mm / 2.0)
-        index = self._segment_index(point.position_mm)
+        index = self._segment_index(self.rail_x_mm(point.position_mm))   # 구간 번호는 레일 좌표로 (결함 구간과 같은 좌표계)
         if self.open_index is None:
             self.open_index = index
         elif index != self.open_index:
@@ -448,6 +474,9 @@ class DefectRuleEngine:
             else "ok"
         )
         motion = _motion(current.stage, ahead_stage)
+        if self.pass_result is not None:
+            # 판정과 신호를 같은 근거(주행 분석 결과)로. 진행 방향 앞 구간까지 보고 결함 전에 감속·정지한다.
+            motion = self._motion_from_pass(index)
         defects = self.defect_list()
         return {
             "ready": True,
@@ -479,6 +508,20 @@ class DefectRuleEngine:
             "rail_risk_left": self._risk_array("left"),
             "rail_risk_right": self._risk_array("right"),
         }
+
+    def _motion_from_pass(self, index: int) -> str:
+        risk_l = self._risk_array("left")
+        risk_r = self._risk_array("right")
+        scores = []
+        for k in range(0, MOTION_LOOKAHEAD_SEGMENTS + 1):
+            i = index + self.direction * k
+            if 0 <= i < self.segment_count:
+                scores.append(max(risk_l[i], risk_r[i]))
+        if any(v >= STAGE_SCORE["danger"] for v in scores):
+            return "stop"
+        if any(v >= STAGE_SCORE["caution"] for v in scores):
+            return "slow"
+        return "cruise"
 
     def defect_list(self) -> list[dict]:
         defects: list[dict] = []
