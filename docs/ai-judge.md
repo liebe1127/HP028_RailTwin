@@ -2,6 +2,8 @@
 
 작성 2026-11-04, 배용진. 기본은 꺼져 있다. 켜지 않으면 동작이 전과 같다.
 
+> 연구 자료(가상 모형, 학습 코드 `ai_train*.py`, 결과, 연구노트 PDF)는 서버 저장소에 넣지 않았다. 배용진 fork의 `virtual_validation/`에 있다: https://github.com/dydwls315-ops/HP028_RailTwin/tree/main/virtual_validation (기준 커밋 `b3311f2`). 켜는 순서와 재적응 절차는 `docs/빌드_대기_목록.md`.
+
 ## 무엇인가
 
 - `rail_ai.py` — 좌·우 변화 신호(기준선을 뺀 센서 거리)에서 **단차 크기·처짐 크기(mm)** 를 내는 1D CNN 5개의 평균. numpy 만 쓴다 (torch 불필요, 1회 추정 20 ms 안팎).

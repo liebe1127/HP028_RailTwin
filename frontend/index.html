@@ -501,6 +501,7 @@
       vertical: '수직 변형',
       cross_level: '좌우 높이차',
       sensor_check: '센서 점검',
+      rebaseline: '기준선 점검',
     };
     const STAGE_LABELS = { ok: '정상', caution: '주의', danger: '위험' };
     const MOTION_LABELS = { cruise: '평속', slow: '감속 0.1 m/s', stop: '진입 전 정지' };
@@ -735,9 +736,12 @@
           ? '시연 모드'
           : (mqttConnected ? `연결 · 수신 ${mqttCount}` : '끊김');
         document.getElementById('meta-mqtt').style.color = (!demoMode && mqttConnected) ? 'var(--stage1)' : 'var(--muted)';
-        document.getElementById('meta-ai').textContent = h.rule_engine
-          ? '4분류 규칙'
-          : '대기';
+        const judge = h.judge || {};
+        document.getElementById('meta-ai').textContent = !h.rule_engine
+          ? '대기'
+          : (judge.ai
+            ? `규칙 v2 + 1D CNN (${judge.ai_models || 0}개)`
+            : (judge.version === 'v2' ? '규칙 v2' : '4분류 규칙'));
         document.getElementById('meta-ai').style.color = h.rule_engine ? 'var(--stage2)' : 'var(--danger)';
         document.getElementById('meta-ws').textContent = String(c.connected_clients ?? h.ws_clients ?? '—');
         document.getElementById('meta-queue').textContent =
@@ -1052,6 +1056,7 @@
           danger: '해당 구간 진입 전 정지 (탈선 방향이라 가장 위험)',
         },
         sensor_check: { ok: '센서 고정·배선 점검 후 다시 측정 (레일 결함 아님)' },
+        rebaseline: { ok: '레일이 다시 놓였을 수 있음. 정상 레일 3회 주행으로 기준선 재등록' },
       };
       const row = table[defectType] || {};
       return row[stage] || '';
@@ -1098,13 +1103,23 @@
         const used = Number.isFinite(passes) ? `${passes}회 평균` : '';
         const limit = Number.isFinite(Number(d.limit_mm)) ? `한계 ${Number(d.limit_mm).toFixed(1)} mm` : '';
         const action = driveAction(d.defect_type, d.stage, observing);
+        // 판정 엔진 v2 + AI 정보 (켜져 있을 때만 값이 온다)
+        const ai = d.ai_sizes_mm && Number(d.ai_sizes_mm[d.defect_type]);
+        const spread = d.ai_spread_mm && Number(d.ai_spread_mm[d.defect_type]);
+        const aiText = Number.isFinite(ai)
+          ? `AI ${ai.toFixed(2)} mm${Number.isFinite(spread) ? ` ±${spread.toFixed(2)}` : ''}`
+          : '';
+        const flags = [
+          d.low_confidence ? '신뢰 낮음' : '',
+          d.rebaseline_recommended ? '기준선 재등록 권고' : '',
+        ].filter(Boolean).join(' · ');
         const color = observing ? '#94a3b8'
           : (d.stage === 'danger' ? '#ef4444' : (d.stage === 'caution' ? '#eab308' : '#22c55e'));
         const row = document.createElement('div');
         row.style.borderLeft = `3px solid ${color}`;
         row.style.paddingLeft = '8px';
         row.style.marginBottom = '6px';
-        row.textContent = [place, name, size, stage, side, used, limit, action]
+        row.textContent = [place, name, size, aiText, stage, side, used, limit, action, flags]
           .filter(Boolean)
           .join(' · ');
         el.appendChild(row);

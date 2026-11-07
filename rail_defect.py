@@ -19,9 +19,14 @@ from pass_analysis import PassAnalyzer, PassProfile, JOINTS_MM, SENSOR_OFFSET_MM
 # 좌표계 통일(2026-11-03): 결함 구간·위험도 배열·감속 신호는 모두 "센서 기준 레일 mm" 로 낸다.
 # 엔코더 원시값(출발점 0, 뒷바퀴 기준)은 직전 주행 분석이 찾은 이음부 위치·배율로 레일 좌표로 바꾼다.
 # 아직 주행 분석 결과가 없을 때만 아래 값(출발 시 뒷바퀴의 레일 위치, mm)을 쓴다. 운용 환경에 맞게 환경 변수로 준다.
-ENCODER_ZERO_RAIL_MM = float(os.getenv("RAIL_ENCODER_ZERO_MM", "0"))
+# 기본 40: 9/28 실측 24회에서 이음부로 역산한 출발 시 센서 위치 중앙값 289 mm ≈ 40 + 센서 오프셋 250.
+ENCODER_ZERO_RAIL_MM = float(os.getenv("RAIL_ENCODER_ZERO_MM", "40"))
 # 감속·정지는 주행 분석 결과(rail_risk)에서, 진행 방향으로 이 구간 수만큼 앞을 미리 본다.
 MOTION_LOOKAHEAD_SEGMENTS = int(os.getenv("RAIL_MOTION_LOOKAHEAD", "2"))
+JUDGE_VERSION = os.getenv("RAIL_JUDGE", "v1").lower()
+# 감속·정지를 주행 분석 결과에서 낼지. 기본은 v2 에서만 켠다(v1 은 예전처럼 구간 규칙이 낸다). 환경 변수로 따로 켜고 끈다.
+MOTION_FROM_PASS = os.getenv("RAIL_MOTION_FROM_PASS", "1" if JUDGE_VERSION == "v2" else "0").lower() in ("1", "true", "yes")
+_BASELINE_FROM_ENV = object()
 
 RAIL_SIDES = ("left", "right")
 DEFECT_TYPES = ("normal", "joint_step", "vertical", "cross_level")
@@ -187,21 +192,24 @@ class DefectRuleEngine:
         self,
         *,
         segment_count: int = 20,
-        rail_length_cm: float = 100.0,
+        rail_length_cm: float = 180.0,
+        baseline_file=_BASELINE_FROM_ENV,
     ) -> None:
+        # baseline_file=None 이면 기준선을 파일에 읽고 쓰지 않는다(재생 전용 엔진). 기본은 RAIL_BASELINE_FILE.
+        store = os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json") if baseline_file is _BASELINE_FROM_ENV else baseline_file
         self.segment_count = max(int(segment_count), 1)
         self.rail_length_mm = max(float(rail_length_cm) * 10.0, 1.0)
         self.segment_mm = self.rail_length_mm / self.segment_count
         # 주행 단위 파형 적합 (논문 2.2절). 완만한 결함은 구간 규칙이 못 잡으므로 이 결과가 우선한다.
-        if os.getenv("RAIL_JUDGE", "v1").lower() == "v2":
+        if JUDGE_VERSION == "v2":
             # 가상 시운전으로 찾은 네 문제를 고친 수정안(rail_judge_v2.py). 기본은 논문 검증본(v1).
             from rail_judge_v2 import PassAnalyzerV2
             self.pass_analyzer = PassAnalyzerV2(
-                LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
+                LIMIT_MM, MIN_PASSES_FOR_STAGE, store=store
             )
         else:
             self.pass_analyzer = PassAnalyzer(
-                LIMIT_MM, MIN_PASSES_FOR_STAGE, store=os.getenv("RAIL_BASELINE_FILE", "rail_baseline.json")
+                LIMIT_MM, MIN_PASSES_FOR_STAGE, store=store
             )
         self.baseline_mode = False       # True 이면 다음 주행들을 정상 기준선으로 등록
         self.pass_profile = PassProfile()
@@ -240,12 +248,27 @@ class DefectRuleEngine:
         right = mate if side == "left" else sample
         return self.evaluate_pair(left, right)
 
-    def rail_x_mm(self, raw_position_mm: float) -> float:
+    def judge_info(self) -> dict:
+        """헬스체크·대시보드용 판정 방식 요약."""
+        ai = getattr(self.pass_analyzer, "ai", None)
+        return {
+            "version": JUDGE_VERSION,
+            "ai": ai is not None,
+            "ai_models": getattr(ai, "n_models", 0) if ai is not None else 0,
+            "motion_from_pass": MOTION_FROM_PASS,
+            "rail_length_cm": self.rail_length_mm / 10.0,
+            "segment_count": self.segment_count,
+        }
+
+    def rail_x_mm(self, raw_position_mm: float, *, demo: bool = False) -> float:
         """엔코더 원시값(뒷바퀴, 출발점 0) → 센서 기준 레일 좌표(mm).
 
         직전 주행 분석이 이음부 틈 두 개를 찾았으면 그 위치·배율로 바꾼다(미끄러짐 보정 포함).
         없으면 출발 위치 가정(ENCODER_ZERO_RAIL_MM) + 센서 오프셋으로 근사한다.
+        더미(시연) 샘플은 위치가 이미 더미 레일 좌표라 그대로 쓴다.
         """
+        if demo:
+            return float(raw_position_mm)
         r = self.pass_result
         if r and r.get("encoder_scale") and r.get("joint_raw_mm"):
             return float(JOINTS_MM[0] + (float(raw_position_mm) - float(r["joint_raw_mm"][0])) * float(r["encoder_scale"]))
@@ -259,7 +282,8 @@ class DefectRuleEngine:
         self.pending["right"] = right
         self._note_direction(point.position_mm)
         self.pass_profile.add(point.position_mm, point.m_mm + point.delta_mm / 2.0, point.m_mm - point.delta_mm / 2.0)
-        index = self._segment_index(self.rail_x_mm(point.position_mm))   # 구간 번호는 레일 좌표로 (결함 구간과 같은 좌표계)
+        demo = left.get("_source") == "demo"
+        index = self._segment_index(self.rail_x_mm(point.position_mm, demo=demo))   # 구간 번호는 레일 좌표로 (결함 구간과 같은 좌표계)
         if self.open_index is None:
             self.open_index = index
         elif index != self.open_index:
@@ -363,12 +387,21 @@ class DefectRuleEngine:
             self.pass_result = result
         return result
 
-    def _pass_segment_range(self) -> tuple[int, int] | None:
+    def _pass_defects(self) -> list[dict]:
+        """주행 분석 결과의 결함 목록. v2 는 여러 개(defects), v1 은 대표 하나. 센서 점검은 레일 결함이 아니라 뺀다."""
         r = self.pass_result
-        if not r or r["defect_type"] == "normal" or r["from_mm"] is None:
+        if not r or r["defect_type"] in ("normal", "sensor_check"):
+            return []
+        if isinstance(r.get("defects"), list):
+            return [d for d in r["defects"] if d.get("defect_type") not in (None, "normal")]
+        return [r]
+
+    def _pass_segment_range(self, d: dict | None = None) -> tuple[int, int] | None:
+        d = d if d is not None else self.pass_result
+        if not d or d.get("defect_type") == "normal" or d.get("from_mm") is None or d.get("to_mm") is None:
             return None
-        lo = self._segment_index(r["from_mm"])
-        hi = self._segment_index(r["to_mm"] - 1e-6)
+        lo = self._segment_index(d["from_mm"])
+        hi = self._segment_index(d["to_mm"] - 1e-6)
         return lo, hi
 
     def _segment_index(self, position_mm: float) -> int:
@@ -474,7 +507,7 @@ class DefectRuleEngine:
             else "ok"
         )
         motion = _motion(current.stage, ahead_stage)
-        if self.pass_result is not None:
+        if MOTION_FROM_PASS and self.pass_result is not None:
             # 판정과 신호를 같은 근거(주행 분석 결과)로. 진행 방향 앞 구간까지 보고 결함 전에 감속·정지한다.
             motion = self._motion_from_pass(index)
         defects = self.defect_list()
@@ -527,22 +560,42 @@ class DefectRuleEngine:
         defects: list[dict] = []
         r = self.pass_result
         if r and r["defect_type"] != "normal":
-            defects.append(
-                {
-                    "source": "pass_fit",
-                    "side": r["side"],
-                    "from_mm": r["from_mm"],
-                    "to_mm": r["to_mm"],
-                    "defect_type": r["defect_type"],
-                    "stage": r["stage"],
-                    "magnitude_mm": r["magnitude_mm"],
-                    "sizes_mm": r["sizes_mm"],
-                    "limit_mm": LIMIT_MM.get(r["defect_type"]),
-                    "limit_source": LIMIT_SOURCE.get(r["defect_type"]),
-                    "pass_count": r["passes_used"],
-                    "score": STAGE_SCORE[r["stage"]],
-                }
-            )
+            # 주행 전체에 대한 정보(v2·AI). 결함마다 같은 값을 붙여 대시보드가 행마다 보여 줄 수 있게 한다
+            common = {
+                "ai_sizes_mm": r.get("ai_sizes_mm"),
+                "ai_spread_mm": r.get("ai_spread_mm"),
+                "low_confidence": r.get("low_confidence"),
+                "rebaseline_recommended": r.get("rebaseline_recommended"),
+                "sensor_check": r.get("sensor_check"),
+            }
+            items = self._pass_defects() or [r]   # 센서 점검만 있는 주행은 그 한 줄을 보인다
+            for d in items:
+                kind = d["defect_type"]
+                defects.append(
+                    {
+                        "source": "pass_fit",
+                        "side": d.get("side", "both"),
+                        "from_mm": d.get("from_mm"),
+                        "to_mm": d.get("to_mm"),
+                        "defect_type": kind,
+                        "stage": d.get("stage", "ok"),
+                        "magnitude_mm": d.get("magnitude_mm"),
+                        "sizes_mm": r.get("sizes_mm"),
+                        "limit_mm": LIMIT_MM.get(kind),
+                        "limit_source": LIMIT_SOURCE.get(kind),
+                        "pass_count": r.get("passes_used"),
+                        "score": STAGE_SCORE.get(d.get("stage"), 0.0),
+                        "primary": d is r or (d.get("defect_type") == r["defect_type"] and d.get("from_mm") == r.get("from_mm")),
+                        **common,
+                    }
+                )
+        if r and r["defect_type"] == "normal" and r.get("rebaseline_recommended"):
+            # v2: 결함은 없는데 복원 높이가 계속 남는다 → 레일이 다시 놓였거나 기준선이 낡았다
+            defects.append({
+                "source": "pass_fit", "side": "both", "from_mm": None, "to_mm": None,
+                "defect_type": "rebaseline", "stage": "ok", "magnitude_mm": r.get("drift_mm"),
+                "pass_count": r.get("passes_used"), "score": 0.0, "rebaseline_recommended": True,
+            })
         if r is not None:
             return defects  # 주행 분석 결과가 있으면 그것이 우선. 구간 규칙 결과는 섞지 않는다
         for index, record in enumerate(self.segments):
@@ -581,12 +634,14 @@ class DefectRuleEngine:
         values: list[float] = []
         if self.pass_result is not None:
             values = [0.0] * self.segment_count
-            rng = self._pass_segment_range()
-            if rng:
-                r = self.pass_result
-                if r["defect_type"] != "cross_level" or r["side"] == side:
+            for d in self._pass_defects():
+                # side: both 면 양쪽, left/right 면 그 레일만 (좌우 높이차는 낮은 쪽, v2 단차는 오른 쪽 레일)
+                if d.get("side", "both") not in ("both", side):
+                    continue
+                rng = self._pass_segment_range(d)
+                if rng:
                     for i in range(rng[0], rng[1] + 1):
-                        values[i] = STAGE_SCORE[r["stage"]]
+                        values[i] = max(values[i], STAGE_SCORE.get(d.get("stage"), 0.0))
             return values
         for record in self.segments:
             score = STAGE_SCORE[record.stage]
