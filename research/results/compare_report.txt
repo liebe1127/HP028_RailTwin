@@ -1,0 +1,38 @@
+== 가상 v2 1,800회 (600배치×3회, 다시 놓임 0.08~0.25) — 수정 전 / 후
+엔진                     수정 전         수정 후
+종류 정답(1회)               35%          66%
+3회째 단계 정답(전체)           52%          62%
+정답 '주의' 결함 → 주의  9% (n=101)  44% (n=101)
+정답 '위험' 결함 → 위험  53% (n=96)   81% (n=96)
+정상 오경보(1회)              67%          35%
+정상 3회째 주의 이상            32%          35%
+단차 크기 비율 중앙값           0.50         1.15
+처짐 크기 비율 중앙값           1.55         1.42
+정지 신호 있음                 0회           0회
+감속 신호 있음               416회           0회
+첫 신호 위치 중앙값          989 mm            -
+
+== 결함 모양별 크기 비율(서버/정답, 중앙값) — 다시 놓임 0 데이터
+  수정 전: {'단차 끝만 양쪽': np.float64(0.47), '단차 끝만 한쪽': np.float64(0.25), '단차 파이프전체 양쪽': np.float64(0.54), '단차 파이프전체 한쪽': np.float64(0.27), '침하 600·1200': np.float64(1.03), '침하 받침하나': np.float64(0.55)}
+  수정 후: {'단차 끝만 양쪽': np.float64(1.0), '단차 끝만 한쪽': np.float64(1.02), '단차 파이프전체 양쪽': np.float64(1.03), '단차 파이프전체 한쪽': np.float64(1.04), '침하 600·1200': np.float64(1.04), '침하 받침하나': np.float64(1.0)}
+
+== 다시 놓임 크기별 정상 오경보(1회) / 정상 3회째 주의 이상 / 위험 결함 3회째 위험 판정 — 수정 전 → 후
+  0.03_0.06   수정 전 7% / 0% / 45%          → 수정 후 6% / 3% / 95%
+  0.08_0.12   수정 전 47% / 3% / 45%         → 수정 후 10% / 10% / 86%
+  0.0_0.0     수정 전 0% / 0% / 41%          → 수정 후 1% / 0% / 95%
+  0.15_0.25   수정 전 90% / 40% / 45%        → 수정 후 51% / 50% / 86%
+
+== 수정 후 결함 위치 보고 (가상 v2, 단일 단차 회차): 서버가 보고한 구간이 실제 이음부를 포함하는 비율
+  81% (수정 전은 항상 600~1200 고정)
+
+== 실측 24회 — 수정 전 / 후 (종류/단계/크기)
+  [before]
+    1. 정상: cross_/norm/1.19, normal/norm/0.00, normal/norm/0.00, normal/norm/0.00, normal/norm/0.00, normal/norm/0.00
+    2. 단차: joint_/norm/1.82, joint_/norm/1.83, joint_/dang/1.83, joint_/dang/1.84, joint_/dang/1.85, joint_/dang/1.85
+    3. 상하침하: vertic/norm/1.87, vertic/norm/1.93, vertic/dang/1.96, vertic/dang/1.94, vertic/dang/1.92, vertic/dang/1.93
+    4. 좌우 높이차: cross_/norm/3.15, cross_/norm/2.89, cross_/caut/3.10, cross_/caut/3.07, cross_/caut/3.29, cross_/caut/3.13
+  [after]
+    1. 정상: cross_/norm/2.65, normal/norm/0.00, normal/norm/0.00, normal/norm/0.00, normal/norm/0.00, normal/norm/0.00
+    2. 단차: joint_/norm/1.91, joint_/norm/1.99, joint_/dang/1.94, joint_/dang/1.95, joint_/dang/1.97, joint_/dang/1.97
+    3. 상하침하: vertic/norm/1.86, vertic/norm/2.01, vertic/dang/1.97, vertic/dang/1.96, vertic/dang/1.93, vertic/dang/1.94
+    4. 좌우 높이차: joint_/norm/0.76, joint_/norm/0.73, joint_/caut/0.73, joint_/caut/0.72, joint_/caut/0.70, joint_/caut/0.68

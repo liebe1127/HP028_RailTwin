@@ -1,0 +1,28 @@
+== 잡음 은행을 정상 31~33 으로만 만든 경우 — 회귀 B 실측 18회
+  결함 회차: 종류 12/12, 단계 9/12
+  제외(34~36): 종류 3/3, 단계 3/3
+  포함(31~33): 종류 2/3, 단계 2/3
+   run     정답     예측      단계   정답단계   단차   처짐      잡음은행
+c1_r31 normal   HF+C  danger normal 1.03 1.00 포함(31~33)
+c1_r32 normal normal  normal normal 0.09 0.48 포함(31~33)
+c1_r33 normal normal  normal normal 0.18 0.47 포함(31~33)
+c1_r34 normal normal  normal normal 0.03 0.10 제외(34~36)
+c1_r35 normal normal  normal normal 0.03 0.42 제외(34~36)
+c1_r36 normal normal  normal normal 0.05 0.14 제외(34~36)
+c2_r25     HF     HF  danger danger 2.33 0.17     결함 회차
+c2_r26     HF     HF  danger danger 2.49 0.00     결함 회차
+c2_r27     HF     HF  danger danger 2.42 0.17     결함 회차
+c2_r28     HF     HF  danger danger 2.50 0.00     결함 회차
+c2_r29     HF     HF  danger danger 2.40 0.00     결함 회차
+c2_r30     HF     HF  danger danger 2.32 0.00     결함 회차
+c3_r18      C      C caution danger 0.15 0.88     결함 회차
+c3_r19      C      C  danger danger 0.15 1.26     결함 회차
+c3_r20      C      C caution danger 0.06 0.93     결함 회차
+c3_r22      C      C caution danger 0.10 0.73     결함 회차
+c3_r23      C      C  danger danger 0.06 1.07     결함 회차
+c3_r24      C      C  danger danger 0.12 1.13     결함 회차
+
+== 규칙 A (기준선만 31~33) 실측 18회
+  결함 회차: 종류 7/12, 단계 12/12
+  제외(34~36): 종류 3/3, 단계 3/3
+  포함(31~33): 종류 2/3, 단계 2/3

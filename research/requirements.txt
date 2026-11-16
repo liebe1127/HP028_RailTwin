@@ -1,0 +1,8 @@
+# RailTwin 가상 모형·가상 데이터·AI 학습·재검증 코드용 (sim/ 폴더)
+# 확인한 환경: Python 3.13, 아래 버전에서 전부 동작. 3.10 이상이면 같은 범위로 설치해도 된다.
+numpy>=1.26,<3
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+matplotlib>=3.8
+torch>=2.3          # 학습(ai_train.py, ai_train_v2.py, recheck_seed.py)에만 필요. CPU 판이면 충분

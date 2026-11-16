@@ -1,0 +1,49 @@
+﻿engine,cfg,rep,truth,srv,stage,mag,side,frm,to
+before,1. 정상,1,normal,cross_level,normal,1.188,right,600.0,1200.0
+before,1. 정상,2,normal,normal,normal,0.0,both,,
+before,1. 정상,3,normal,normal,normal,0.0,both,,
+before,1. 정상,4,normal,normal,normal,0.0,both,,
+before,1. 정상,5,normal,normal,normal,0.0,both,,
+before,1. 정상,6,normal,normal,normal,0.0,both,,
+before,2. 단차,1,joint_step,joint_step,normal,1.821,both,600.0,1200.0
+before,2. 단차,2,joint_step,joint_step,normal,1.831,both,600.0,1200.0
+before,2. 단차,3,joint_step,joint_step,danger,1.834,both,600.0,1200.0
+before,2. 단차,4,joint_step,joint_step,danger,1.836,both,600.0,1200.0
+before,2. 단차,5,joint_step,joint_step,danger,1.849,both,600.0,1200.0
+before,2. 단차,6,joint_step,joint_step,danger,1.85,both,600.0,1200.0
+before,3. 상하침하,1,vertical,vertical,normal,1.874,both,600.0,1200.0
+before,3. 상하침하,2,vertical,vertical,normal,1.932,both,600.0,1200.0
+before,3. 상하침하,3,vertical,vertical,danger,1.956,both,600.0,1200.0
+before,3. 상하침하,4,vertical,vertical,danger,1.938,both,600.0,1200.0
+before,3. 상하침하,5,vertical,vertical,danger,1.916,both,600.0,1200.0
+before,3. 상하침하,6,vertical,vertical,danger,1.934,both,600.0,1200.0
+before,4. 좌우 높이차,1,cross_level,cross_level,normal,3.147,left,600.0,1200.0
+before,4. 좌우 높이차,2,cross_level,cross_level,normal,2.89,left,600.0,1200.0
+before,4. 좌우 높이차,3,cross_level,cross_level,caution,3.103,left,600.0,1200.0
+before,4. 좌우 높이차,4,cross_level,cross_level,caution,3.067,left,600.0,1200.0
+before,4. 좌우 높이차,5,cross_level,cross_level,caution,3.287,left,600.0,1200.0
+before,4. 좌우 높이차,6,cross_level,cross_level,caution,3.129,left,600.0,1200.0
+after,1. 정상,1,normal,cross_level,normal,2.647,right,300.0,900.0
+after,1. 정상,2,normal,normal,normal,0.0,both,,
+after,1. 정상,3,normal,normal,normal,0.0,both,,
+after,1. 정상,4,normal,normal,normal,0.0,both,,
+after,1. 정상,5,normal,normal,normal,0.0,both,,
+after,1. 정상,6,normal,normal,normal,0.0,both,,
+after,2. 단차,1,joint_step,joint_step,normal,1.908,both,500.0,700.0
+after,2. 단차,2,joint_step,joint_step,normal,1.985,both,500.0,700.0
+after,2. 단차,3,joint_step,joint_step,danger,1.943,both,1100.0,1300.0
+after,2. 단차,4,joint_step,joint_step,danger,1.952,both,500.0,700.0
+after,2. 단차,5,joint_step,joint_step,danger,1.969,both,1100.0,1300.0
+after,2. 단차,6,joint_step,joint_step,danger,1.972,both,1100.0,1300.0
+after,3. 상하침하,1,vertical,vertical,normal,1.864,both,600.0,1200.0
+after,3. 상하침하,2,vertical,vertical,normal,2.006,both,600.0,1200.0
+after,3. 상하침하,3,vertical,vertical,danger,1.969,both,600.0,1200.0
+after,3. 상하침하,4,vertical,vertical,danger,1.957,both,600.0,1200.0
+after,3. 상하침하,5,vertical,vertical,danger,1.928,both,600.0,1200.0
+after,3. 상하침하,6,vertical,vertical,danger,1.943,both,600.0,1200.0
+after,4. 좌우 높이차,1,cross_level,joint_step,normal,0.764,right,1100.0,1300.0
+after,4. 좌우 높이차,2,cross_level,joint_step,normal,0.726,right,1100.0,1300.0
+after,4. 좌우 높이차,3,cross_level,joint_step,caution,0.733,right,1100.0,1300.0
+after,4. 좌우 높이차,4,cross_level,joint_step,caution,0.72,right,1100.0,1300.0
+after,4. 좌우 높이차,5,cross_level,joint_step,caution,0.7,right,1100.0,1300.0
+after,4. 좌우 높이차,6,cross_level,joint_step,caution,0.681,right,1100.0,1300.0

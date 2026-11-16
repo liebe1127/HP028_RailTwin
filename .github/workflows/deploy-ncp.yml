@@ -4,6 +4,10 @@ name: Deploy to NCP
 on:
   push:
     branches: [main]
+    # 연구 폴더만 바뀐 push 는 서버에 배포하지 않는다 (FastAPI 재시작으로 3회 평균 기록이 지워지지 않게).
+    # 서버 코드와 함께 바뀐 push 는 그대로 배포된다.
+    paths-ignore:
+      - "research/**"
   workflow_dispatch:
 
 concurrency:
