@@ -3,7 +3,7 @@
 > 기준일: 2026-09-17. 이 맥에서 실제로 확인한 설치 상태를 기준으로 한다.  
 > 3D 범위: **레일 두 줄만**. 크레인 메시·Godot는 현재 작업이 아니다.
 
-이 문서는 사람이 따라 하는 온보딩이다. AI 채팅용 원칙은 [`핵심기술스택과_작업절차_AI학습용_Tech-Stack-and-Workflow.md`](핵심기술스택과_작업절차_AI학습용_Tech-Stack-and-Workflow.md)를 쓴다.
+이 문서는 사람이 따라 하는 온보딩이다.
 
 ---
 
@@ -40,7 +40,7 @@ Android Build Support가 같이 깔려 있어도 이 프로젝트는 쓰지 않�
    **저장소 루트(`해운물류0717(최신)`)를 Unity 프로젝트로 열지 않는다.**
 5. 버전이 `6000.6.0f1`인지 보고 Open.
 
-터미널에서 바로 열려면 아래를 실행하거나, [`unity/Unity에서_레일씬열기.command`](../unity/Unity에서_레일씬열기.command)를 더블클릭한다.
+터미널에서 바로 열려면 저장소 루트에서 아래를 실행한다.
 
 ```bash
 open -a "/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app" \
@@ -150,7 +150,6 @@ python3 -m pytest tests/ -q
 
 ```text
 @docs/mac-m5-unity-onboarding.md
-@docs/notion-project-context.md
 @unity/RailTwinRails/Assets/Scripts/RailTwinController.cs
 
 이 맥은 Unity 6000.6.0f1 + WebGL이 설치된 M5 Pro다.

@@ -4,7 +4,7 @@
 
 Mac 온보딩(Hub에 프로젝트 추가, Cursor 연결, Play 확인)은 [`docs/mac-m5-unity-onboarding.md`](../../docs/mac-m5-unity-onboarding.md)다. 에디터는 **6000.6.0f1** + **Web Build Support**가 필요하다. 저장소 루트가 아니라 이 폴더(`unity/RailTwinRails`)를 연다.
 
-바로 열려면 상위 폴더의 [`Unity에서_레일씬열기.command`](../Unity에서_레일씬열기.command)를 더블클릭한다.
+터미널에서 바로 여는 명령은 위 온보딩 문서에 있다.
 
 ## 빌드
 
