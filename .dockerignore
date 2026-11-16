@@ -13,6 +13,7 @@ venv
 
 # 펌웨어·로컬 도구 (이미지에 불필요)
 firmware/
+research/
 godot/
 docs/*.pptx
 docs/RailTwin_Progress_Brief.pptx

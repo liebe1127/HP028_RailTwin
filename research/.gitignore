@@ -1,0 +1,10 @@
+# README 의 돌리는 법·재적응 절차가 만드는 것 (크기 때문에 커밋하지 않는다. 같은 씨앗이면 다시 만들 수 있다)
+data/
+dataset*/
+sweep_*/
+check_a/
+check_c/
+check_normal/
+normal_new/
+adapt_out/
+__pycache__/
