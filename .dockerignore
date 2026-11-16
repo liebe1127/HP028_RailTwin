@@ -16,7 +16,6 @@ firmware/
 research/
 godot/
 docs/*.pptx
-docs/RailTwin_Progress_Brief.pptx
 
 # IDE / OS
 .idea
